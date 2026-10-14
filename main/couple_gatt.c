@@ -353,6 +353,8 @@ static int build_wifi_status_json(struct os_mbuf *om)
     cJSON_AddStringToObject(root, "ssid", couple_wifi_get_ssid());
     cJSON_AddStringToObject(root, "ip", couple_wifi_get_ip());
     cJSON_AddNumberToObject(root, "rssi", (double)couple_wifi_get_rssi());
+    // 最近一次断开原因码：App 用它把“未连上”细化为具体原因
+    cJSON_AddNumberToObject(root, "reason", (double)couple_wifi_last_reason());
 
     char *json_str = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);

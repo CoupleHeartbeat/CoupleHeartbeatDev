@@ -57,6 +57,10 @@ static volatile bool s_scanning;
 static volatile bool s_scan_pending;   // Wi-Fi 尚未启动完成时挂起的一次扫描
 static volatile bool s_scan_done;
 
+// 最近一次断开原因（wifi_err_reason_t）。App 据此提示“密码错 / 找不到网络”等，
+// 否则用户只能看到一句笼统的“未连上”。
+static volatile uint8_t s_last_reason;
+
 static couple_wifi_state_t s_state = COUPLE_WIFI_STATE_IDLE;
 static char s_ssid[COUPLE_WIFI_SSID_MAX];
 static char s_pass[COUPLE_WIFI_PASS_MAX];
@@ -228,6 +232,8 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
         wifi_event_sta_disconnected_t *d = data;
         s_rssi = 0;
         s_ip[0] = '\0';
+        // 记下原因码供 App 展示（0 表示正常断开）
+        s_last_reason = (uint8_t)d->reason;
 
         if (!s_want_connect || !s_has_creds) {
             set_state(COUPLE_WIFI_STATE_IDLE);
@@ -250,6 +256,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
         ip_event_got_ip_t *e = data;
         snprintf(s_ip, sizeof(s_ip), IPSTR, IP2STR(&e->ip_info.ip));
         s_retry = 0;
+        s_last_reason = 0;
         // 射频开机与握手会占用大量堆，这里记录一次便于评估共存余量
         ESP_LOGI(TAG, "Wi-Fi 已连接，IP=%s 空闲堆=%u", s_ip,
                  (unsigned)esp_get_free_heap_size());
@@ -359,6 +366,7 @@ static esp_err_t connect_with(const char *ssid, const char *password)
     s_has_creds = true;
     s_want_connect = true;
     s_retry = 0;
+    s_last_reason = 0;
     s_ip[0] = '\0';
 
     err = ensure_wifi_inited();
@@ -395,6 +403,7 @@ static void clear_sync(void)
     s_has_creds = false;
     s_creds_loaded = true;
     s_retry = 0;
+    s_last_reason = 0;
     s_ssid[0] = '\0';
     s_pass[0] = '\0';
     s_ip[0] = '\0';
@@ -533,6 +542,11 @@ const char *couple_wifi_get_ip(void)
 int couple_wifi_get_rssi(void)
 {
     return s_rssi;
+}
+
+uint8_t couple_wifi_last_reason(void)
+{
+    return s_last_reason;
 }
 
 // ============================================================================

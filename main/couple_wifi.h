@@ -41,6 +41,9 @@ bool couple_wifi_is_configured(void);
 const char *couple_wifi_get_ssid(void);   // 已保存的 SSID，未配置返回 ""
 const char *couple_wifi_get_ip(void);     // 未连接返回 ""
 int couple_wifi_get_rssi(void);           // 未连接返回 0
+// 最近一次断开原因码（wifi_err_reason_t），0 表示未失败过。
+// App 据此把“连不上”细化为密码错误 / 找不到网络等提示。
+uint8_t couple_wifi_last_reason(void);
 
 // ============================================================================
 // 扫描附近网络（App 用它列出候选网络，也顺带确认是不是 2.4GHz 网络）
