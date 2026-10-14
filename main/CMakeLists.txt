@@ -10,6 +10,7 @@ idf_component_register(
          "couple_gatt.c"
          "couple_wifi.c"
          "couple_wifi_parse.c"
+         "couple_wifi_scan.c"
          "couple_ai.c"
          "couple_ai_json.c"
          "couple_mimo.c"

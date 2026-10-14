@@ -14,6 +14,7 @@
 #include "host/ble_gap.h"
 #include "host/ble_gatt.h"
 #include "host/ble_hs.h"
+#include "host/ble_att.h"
 #include "host/util/util.h"
 #include "nimble/nimble_port.h"
 #include "services/gap/ble_svc_gap.h"
@@ -21,6 +22,7 @@
 #include "esp_random.h"
 #include "esp_mac.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static const char *TAG = "couple_gatt";
@@ -35,6 +37,7 @@ static const char *TAG = "couple_gatt";
 // 特征值 0xFFE4: Wi-Fi 配网 (Write)
 // 特征值 0xFFE5: Wi-Fi 状态 (Read/Notify)
 // 特征值 0xFFE6: AI 配置 (Read/Write)：写 API Key，读是否已配置（绝不回明文）
+// 特征值 0xFFE7: Wi-Fi 扫描 (Read/Write)：写 {"scan":true} 触发，读回候选网络
 // ============================================================================
 
 #define GATT_SVC_UUID          0xFFE0
@@ -44,6 +47,7 @@ static const char *TAG = "couple_gatt";
 #define GATT_CHR_WIFI_CFG_UUID 0xFFE4
 #define GATT_CHR_WIFI_STA_UUID 0xFFE5
 #define GATT_CHR_AI_CFG_UUID   0xFFE6
+#define GATT_CHR_WIFI_SCAN_UUID 0xFFE7
 
 #define COUPLE_GATT_DEV_NAME_PREFIX "AI-Passport"
 #define COUPLE_GATT_DEV_NAME_MAX    20
@@ -158,6 +162,13 @@ static const struct ble_gatt_svc_def s_gatt_svcs[] = {
                 // 写 {"api_key":"..."} 保存、{"clear":true} 清除；
                 // 读只返回 {"configured":bool}，Key 明文永不出设备。
                 .uuid = BLE_UUID16_DECLARE(GATT_CHR_AI_CFG_UUID),
+                .access_cb = chr_access,
+                .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_WRITE,
+            },
+            {
+                // 0xFFE7 —— Wi-Fi 扫描（Read/Write）
+                // 写 {"scan":true} 触发一次扫描；读取候选网络列表（按信号降序）
+                .uuid = BLE_UUID16_DECLARE(GATT_CHR_WIFI_SCAN_UUID),
                 .access_cb = chr_access,
                 .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_WRITE,
             },
@@ -354,6 +365,74 @@ static int build_wifi_status_json(struct os_mbuf *om)
 }
 
 // ============================================================================
+// 构造扫描结果 JSON（供 App 选择网络）
+//
+// 受 ATT 负载限制：按当前协商 MTU 精确截断，只回能放下的前若干条
+// （列表本身已按信号降序，所以丢掉的是最弱的）。SSID 里的引号与反斜杠
+// 会被转义，长度估算也按转义后计算，避免截断处产生半截 JSON。
+// ============================================================================
+static bool buf_puts(char *buf, size_t cap, size_t *w, const char *s)
+{
+    size_t n = strlen(s);
+    if (*w + n >= cap) return false;
+    memcpy(buf + *w, s, n);
+    *w += n;
+    return true;
+}
+
+static bool buf_putc(char *buf, size_t cap, size_t *w, char c)
+{
+    if (*w + 1 >= cap) return false;
+    buf[(*w)++] = c;
+    return true;
+}
+
+static int build_wifi_scan_json(struct os_mbuf *om, uint16_t conn_handle)
+{
+    const couple_wifi_scan_list_t *list = couple_wifi_scan_results();
+
+    uint16_t mtu = ble_att_mtu(conn_handle);
+    size_t budget = (mtu > 8) ? (size_t)(mtu - 4) : 64;
+    uint8_t fit = couple_wifi_scan_fit(list, budget);
+    if (fit > list->count) fit = list->count;
+
+    size_t cap = budget + 8;
+    char *buf = malloc(cap);
+    if (!buf) return BLE_ATT_ERR_INSUFFICIENT_RES;
+
+    size_t w = 0;
+    bool ok = buf_puts(buf, cap, &w,
+                       couple_wifi_is_scanning()
+                           ? "{\"scanning\":true,\"aps\":["
+                           : "{\"scanning\":false,\"aps\":[");
+    for (uint8_t i = 0; ok && i < fit; i++) {
+        if (i) ok = buf_putc(buf, cap, &w, ',');
+        if (ok) ok = buf_puts(buf, cap, &w, "{\"ssid\":\"");
+        for (const char *p = list->aps[i].ssid; ok && *p; p++) {
+            if (*p == '"' || *p == '\\') ok = buf_putc(buf, cap, &w, '\\');
+            if (ok) ok = buf_putc(buf, cap, &w, *p);
+        }
+        if (ok) ok = buf_puts(buf, cap, &w, "\",\"rssi\":");
+        if (ok) {
+            char num[8];
+            snprintf(num, sizeof(num), "%d", (int)list->aps[i].rssi);
+            ok = buf_puts(buf, cap, &w, num);
+        }
+        if (ok) ok = buf_putc(buf, cap, &w, '}');
+    }
+    // 任何一步写不下就整体放弃，绝不回半截 JSON
+    if (ok) ok = buf_puts(buf, cap, &w, "]}");
+    if (!ok) {
+        free(buf);
+        return BLE_ATT_ERR_INSUFFICIENT_RES;
+    }
+
+    int rc = os_mbuf_append(om, buf, (uint16_t)w);
+    free(buf);
+    return rc == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
+}
+
+// ============================================================================
 // 解析工牌名称 JSON 写入
 // ============================================================================
 static esp_err_t parse_badge_name(const uint8_t *data, uint16_t len,
@@ -390,7 +469,6 @@ static esp_err_t parse_badge_name(const uint8_t *data, uint16_t len,
 static int chr_access(uint16_t conn_handle, uint16_t attr_handle,
                       struct ble_gatt_access_ctxt *ctxt, void *arg)
 {
-    (void)conn_handle;
     (void)attr_handle;
     (void)arg;
 
@@ -421,6 +499,10 @@ static int chr_access(uint16_t conn_handle, uint16_t attr_handle,
             int rc = os_mbuf_append(ctxt->om, json_str, strlen(json_str));
             cJSON_free(json_str);
             return rc == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
+        }
+        if (uuid16 == GATT_CHR_WIFI_SCAN_UUID) {
+            // 读取候选网络列表（按信号降序，受当前 MTU 截断）
+            return build_wifi_scan_json(ctxt->om, conn_handle);
         }
         return BLE_ATT_ERR_UNLIKELY;
 
@@ -561,6 +643,29 @@ static int chr_access(uint16_t conn_handle, uint16_t attr_handle,
             }
             if (err != ESP_OK) return BLE_ATT_ERR_UNLIKELY;
             ESP_LOGI(TAG, "AI Key 已保存（长度 %u）", (unsigned)key_len);
+            return 0;
+
+        } else if (uuid16 == GATT_CHR_WIFI_SCAN_UUID) {
+            // Wi-Fi 扫描：{"scan":true}
+            char json_buf[64];
+            if (len >= sizeof(json_buf)) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+            memcpy(json_buf, data, len);
+            json_buf[len] = '\0';
+
+            cJSON *root = cJSON_Parse(json_buf);
+            bool want_scan = false;
+            if (root) {
+                cJSON *item = cJSON_GetObjectItem(root, "scan");
+                want_scan = cJSON_IsTrue(item);
+                cJSON_Delete(root);
+            }
+            if (!want_scan) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+
+            esp_err_t err = couple_wifi_request_scan();
+            if (err != ESP_OK) {
+                ESP_LOGW(TAG, "扫描请求入队失败: %s", esp_err_to_name(err));
+                return BLE_ATT_ERR_UNLIKELY;
+            }
             return 0;
         }
 

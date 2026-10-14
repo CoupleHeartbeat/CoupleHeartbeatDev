@@ -48,6 +48,9 @@ CONFIG_BT_NIMBLE_NVS_PERSIST=n
 # 与 NVS 提交（含 flash 写，调用链深）。默认 4096 会栈溢出触发 panic 重启，
 # 表现为 App 写入配对数据时设备断开连接，故扩到 8192。
 CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE=8192
+# Wi-Fi 扫描结果（最多约 13 条）要一次读回，默认 256 的 ATT MTU 装不下，
+# 提到 512；App 侧读取扫描特征时也会请求 512。
+CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=512
 
 # --- mbedTLS（AES 加密需要）---
 CONFIG_MBEDTLS_CIPHER_C=y

@@ -8,6 +8,7 @@
 #pragma once
 
 #include "esp_err.h"
+#include "couple_wifi_scan.h"
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -40,3 +41,16 @@ bool couple_wifi_is_configured(void);
 const char *couple_wifi_get_ssid(void);   // 已保存的 SSID，未配置返回 ""
 const char *couple_wifi_get_ip(void);     // 未连接返回 ""
 int couple_wifi_get_rssi(void);           // 未连接返回 0
+
+// ============================================================================
+// 扫描附近网络（App 用它列出候选网络，也顺带确认是不是 2.4GHz 网络）
+// ============================================================================
+// 请求一次扫描（异步）。正在扫描时重复请求直接返回 ESP_OK。
+// 未配网的设备也会为扫描临时启动射频。
+esp_err_t couple_wifi_request_scan(void);
+
+bool couple_wifi_is_scanning(void);
+// 是否至少完成过一次扫描（用于区分“还没扫过”和“扫完没结果”）
+bool couple_wifi_scan_done(void);
+// 最近一次扫描结果：已按信号降序、同名只留最强。永不为 NULL。
+const couple_wifi_scan_list_t *couple_wifi_scan_results(void);

@@ -6,6 +6,7 @@
 #include "couple_wifi.h"
 
 #include "couple_gatt.h"
+#include "couple_wifi_scan.h"
 #include "demo_radio.h"
 #include "esp_event.h"
 #include "esp_heap_caps.h"
@@ -16,6 +17,7 @@
 #include "freertos/queue.h"
 #include "freertos/task.h"
 #include "nvs.h"
+#include <stdlib.h>
 #include <string.h>
 
 static const char *TAG = "couple_wifi";
@@ -32,17 +34,28 @@ static const char *TAG = "couple_wifi";
 
 typedef struct {
     bool clear;
+    bool scan;
     char ssid[COUPLE_WIFI_SSID_MAX];
     char password[COUPLE_WIFI_PASS_MAX];
 } wifi_request_t;
 
 static bool s_netif_ready;
-static bool s_wifi_started;
+static bool s_wifi_inited;    // netif + esp_wifi_init + 事件注册已完成
+static bool s_wifi_started;   // esp_wifi_start() 已调用
 static bool s_creds_loaded;
 static bool s_has_creds;
+// 是否有凭据且希望保持连接。STA_START / DISCONNECTED 只在这个标志为真时才发起
+// 连接，否则会出现“射频刚起来就拿着空配置去连”的竞态。
+static bool s_want_connect;
 static int s_retry;
 static QueueHandle_t s_req_queue;
 static TaskHandle_t s_worker;
+
+// 扫描结果（供 App 读取选择网络）
+static couple_wifi_scan_list_t s_scan_list;
+static volatile bool s_scanning;
+static volatile bool s_scan_pending;   // Wi-Fi 尚未启动完成时挂起的一次扫描
+static volatile bool s_scan_done;
 
 static couple_wifi_state_t s_state = COUPLE_WIFI_STATE_IDLE;
 static char s_ssid[COUPLE_WIFI_SSID_MAX];
@@ -128,6 +141,65 @@ static void update_rssi(void)
 }
 
 // ============================================================================
+// 扫描：把附近 AP 整理后交给 App 选择
+// ============================================================================
+static void start_scan_now(void)
+{
+    wifi_scan_config_t sc = {0};
+    sc.show_hidden = false;
+
+    esp_err_t err = esp_wifi_scan_start(&sc, false);   // 非阻塞，结果在 SCAN_DONE 取
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "启动扫描失败: %s", esp_err_to_name(err));
+        s_scanning = false;
+        s_scan_pending = false;
+        return;
+    }
+    s_scan_pending = false;
+    s_scanning = true;
+    ESP_LOGI(TAG, "开始扫描附近网络");
+}
+
+// SCAN_DONE：把驱动里的结果搬进 s_scan_list（去重 + 按信号排序）
+static void scan_collect(void)
+{
+    s_scanning = false;
+
+    uint16_t num = 0;
+    if (esp_wifi_scan_get_ap_num(&num) != ESP_OK || num == 0) {
+        s_scan_list.count = 0;
+        s_scan_done = true;
+        esp_wifi_clear_ap_list();
+        ESP_LOGI(TAG, "扫描完成：未发现网络");
+        return;
+    }
+    if (num > 32) num = 32;
+
+    wifi_ap_record_t *recs = malloc((size_t)num * sizeof(wifi_ap_record_t));
+    if (!recs) {
+        s_scan_list.count = 0;
+        s_scan_done = true;
+        esp_wifi_clear_ap_list();
+        ESP_LOGW(TAG, "扫描结果缓冲不足");
+        return;
+    }
+
+    uint16_t got = num;
+    couple_wifi_scan_clear(&s_scan_list);
+    if (esp_wifi_scan_get_ap_records(&got, recs) == ESP_OK) {
+        for (uint16_t i = 0; i < got; i++) {
+            couple_wifi_scan_add(&s_scan_list, (const char *)recs[i].ssid,
+                                 (int8_t)recs[i].rssi);
+        }
+    }
+    free(recs);
+    esp_wifi_clear_ap_list();
+    s_scan_done = true;
+    // 只记录数量，不记录 SSID 列表
+    ESP_LOGI(TAG, "扫描完成：%u 个网络", (unsigned)s_scan_list.count);
+}
+
+// ============================================================================
 // 事件处理（运行在默认事件循环任务）
 // ============================================================================
 static void wifi_event_handler(void *arg, esp_event_base_t base,
@@ -136,10 +208,19 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
     (void)arg;
 
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
-        if (s_has_creds) {
-            esp_wifi_connect();
+        // 只有确实希望连接时才发起：射频刚起来时配置还没写，贸然 connect 会用空 SSID
+        if (s_want_connect) {
             set_state(COUPLE_WIFI_STATE_CONNECTING);
+            esp_wifi_connect();
         }
+        if (s_scan_pending) {
+            start_scan_now();
+        }
+        return;
+    }
+
+    if (base == WIFI_EVENT && id == WIFI_EVENT_SCAN_DONE) {
+        scan_collect();
         return;
     }
 
@@ -148,7 +229,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
         s_rssi = 0;
         s_ip[0] = '\0';
 
-        if (!s_has_creds) {
+        if (!s_want_connect || !s_has_creds) {
             set_state(COUPLE_WIFI_STATE_IDLE);
             return;
         }
@@ -179,11 +260,16 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
 }
 
 // ============================================================================
-// 启动 Wi-Fi（首次使用时才启动，未配网设备不占用射频与内存）
+// 初始化并启动 Wi-Fi
+//
+// 顺序很关键：esp_wifi_set_config() 必须在 esp_wifi_start() 之前完成。
+// 否则 STA_START 回调会在配置仍为空时就去 connect，紧接着真正的连接请求又把
+// 它打断（两次 esp_wifi_connect 互相冲突），表现就是“配网一直失败”。
+// 因此这里把初始化与启动拆开，连接统一由 connect_with() 编排。
 // ============================================================================
-static esp_err_t ensure_wifi_started(void)
+static esp_err_t ensure_wifi_inited(void)
 {
-    if (s_wifi_started) return ESP_OK;
+    if (s_wifi_inited) return ESP_OK;
 
     esp_err_t err = demo_radio_network_prepare();
     if (err != ESP_OK) {
@@ -213,17 +299,29 @@ static esp_err_t ensure_wifi_started(void)
 
     ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+
+    s_wifi_inited = true;
+    return ESP_OK;
+}
+
+// 启动射频（幂等）。只有需要连接或需要扫描时才启动，未配网的设备不占射频。
+static esp_err_t wifi_start(void)
+{
+    if (s_wifi_started) return ESP_OK;
+
+    esp_err_t err = ensure_wifi_inited();
+    if (err != ESP_OK) return err;
+
     err = esp_wifi_start();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "esp_wifi_start 失败: %s", esp_err_to_name(err));
         return err;
     }
-
     s_wifi_started = true;
     return ESP_OK;
 }
 
-static esp_err_t apply_creds_and_connect(void)
+static esp_err_t set_sta_config(void)
 {
     wifi_config_t wc = {0};
     strncpy((char *)wc.sta.ssid, s_ssid, sizeof(wc.sta.ssid) - 1);
@@ -234,20 +332,11 @@ static esp_err_t apply_creds_and_connect(void)
     esp_err_t err = esp_wifi_set_config(WIFI_IF_STA, &wc);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "写入 Wi-Fi 配置失败: %s", esp_err_to_name(err));
-        return err;
-    }
-
-    s_retry = 0;
-    s_ip[0] = '\0';
-    set_state(COUPLE_WIFI_STATE_CONNECTING);
-    err = esp_wifi_connect();
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "esp_wifi_connect 失败: %s", esp_err_to_name(err));
     }
     return err;
 }
 
-// 同步执行一次配网（仅由工作任务的首次调用与开机自动连接使用）
+// 同步执行一次配网（只由工作任务调用）
 static esp_err_t connect_with(const char *ssid, const char *password)
 {
     if (!ssid || ssid[0] == '\0') return ESP_ERR_INVALID_ARG;
@@ -268,18 +357,36 @@ static esp_err_t connect_with(const char *ssid, const char *password)
     }
     s_creds_loaded = true;
     s_has_creds = true;
+    s_want_connect = true;
+    s_retry = 0;
+    s_ip[0] = '\0';
 
-    err = ensure_wifi_started();
+    err = ensure_wifi_inited();
     if (err != ESP_OK) return err;
 
-    // 已在连接中时先断开，避免旧配置的握手结果污染新配置的状态
-    esp_wifi_disconnect();
-    return apply_creds_and_connect();
+    err = set_sta_config();
+    if (err != ESP_OK) return err;
+
+    set_state(COUPLE_WIFI_STATE_CONNECTING);
+
+    if (!s_wifi_started) {
+        // 首次：配置已经写好，启动后由 STA_START 回调发起连接
+        return wifi_start();
+    }
+
+    // 已在运行：断开会触发 DISCONNECTED，回调会按新配置重连；
+    // 当前没连着时不会产生该事件，这里直接发起连接。
+    err = esp_wifi_disconnect();
+    if (err == ESP_OK) return ESP_OK;
+    return esp_wifi_connect();
 }
 
 static void clear_sync(void)
 {
     erase_creds();
+
+    // 先撤销连接意图，否则断开产生的 DISCONNECTED 会触发重连
+    s_want_connect = false;
 
     if (s_wifi_started) {
         esp_wifi_disconnect();
@@ -296,6 +403,26 @@ static void clear_sync(void)
     ESP_LOGI(TAG, "Wi-Fi 凭据已清除");
 }
 
+// 扫描一次附近网络（只由工作任务调用）
+static void scan_sync(void)
+{
+    couple_wifi_scan_clear(&s_scan_list);
+    s_scan_done = false;
+    s_scan_pending = true;
+
+    esp_err_t err = wifi_start();
+    if (err != ESP_OK) {
+        s_scan_pending = false;
+        s_scan_done = true;
+        return;
+    }
+
+    // 已经在运行时不会被 STA_START 回调带起来，这里直接发起
+    if (!s_scanning && s_scan_pending) {
+        start_scan_now();
+    }
+}
+
 // ============================================================================
 // 工作任务：串行执行慢操作
 // ============================================================================
@@ -305,7 +432,9 @@ static void wifi_worker(void *arg)
     wifi_request_t req;
     for (;;) {
         if (xQueueReceive(s_req_queue, &req, portMAX_DELAY) != pdTRUE) continue;
-        if (req.clear) {
+        if (req.scan) {
+            scan_sync();
+        } else if (req.clear) {
             clear_sync();
         } else {
             connect_with(req.ssid, req.password);
@@ -404,4 +533,33 @@ const char *couple_wifi_get_ip(void)
 int couple_wifi_get_rssi(void)
 {
     return s_rssi;
+}
+
+// ============================================================================
+// 扫描结果（供 App 读取）
+// ============================================================================
+esp_err_t couple_wifi_request_scan(void)
+{
+    if (!s_req_queue) return ESP_ERR_INVALID_STATE;
+    if (s_scanning) return ESP_OK;   // 正在扫，别叠加请求
+
+    wifi_request_t req = {0};
+    req.scan = true;
+    if (xQueueSend(s_req_queue, &req, 0) != pdTRUE) return ESP_ERR_TIMEOUT;
+    return ESP_OK;
+}
+
+bool couple_wifi_is_scanning(void)
+{
+    return s_scanning;
+}
+
+bool couple_wifi_scan_done(void)
+{
+    return s_scan_done;
+}
+
+const couple_wifi_scan_list_t *couple_wifi_scan_results(void)
+{
+    return &s_scan_list;
 }

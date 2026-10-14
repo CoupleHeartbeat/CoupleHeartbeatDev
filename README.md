@@ -11,7 +11,8 @@ on the FoloToy AI Passport board (ESP32-C3, 8 MB flash, no PSRAM) with ESP-IDF
 
 ## What it does
 
-- **Badge** - clock, name and battery level on the main screen.
+- **Badge** - clock, name, battery level, a Wi-Fi status icon beside the battery
+  and a proximity glow around the screen edges.
 - **Proximity glow** - every device broadcasts a BLE heartbeat carrying its own
   identity. When the paired device comes in range nothing switches page: the
   badge screen stays up and a light effect breathes along all four edges of the
@@ -23,7 +24,9 @@ on the FoloToy AI Passport board (ESP32-C3, 8 MB flash, no PSRAM) with ESP-IDF
   audio, transcribes it, asks the model and speaks the answer back through the
   speaker.
 - **Provisioning** - Wi-Fi credentials and the model API key are pushed from the
-  companion app over BLE and stored in the device NVS only.
+  companion app over BLE and stored in the device NVS only. The device can also
+  scan nearby networks on request, so the app lists the networks the device can
+  actually see (2.4 GHz only).
 
 ## BLE interface
 
@@ -38,6 +41,7 @@ characteristics:
 | 0xFFE4 | write | Wi-Fi credentials, or a clear request |
 | 0xFFE5 | read / notify | Wi-Fi provisioning state (state, SSID, IP, signal) |
 | 0xFFE6 | read / write | model API key; reads only report whether one is configured |
+| 0xFFE7 | read / write | nearby Wi-Fi scan: write a scan request, read the candidate list |
 
 A read never returns the API key and the key is never written to the log.
 
