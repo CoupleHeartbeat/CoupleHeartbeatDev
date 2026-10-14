@@ -58,11 +58,8 @@ static void dispatch_key(bsp_btn_t btn, bsp_btn_ev_t ev)
     case COUPLE_MODE_BADGE:
         couple_badge_key(btn, ev);
         break;
-    case COUPLE_MODE_HEARTBEAT:
-        couple_heartbeat_key(btn, ev);
-        break;
-    case COUPLE_MODE_TOUCH:
-        couple_touch_key(btn, ev);
+    case COUPLE_MODE_AI:
+        couple_ai_key(btn, ev);
         break;
     default:
         break;
@@ -96,8 +93,8 @@ static esp_err_t input_dispatch_init(void)
 }
 
 // ============================================================================
-// 周期任务：心跳超时检测 + 靠近自动切换模式
-// 不能在 LVGL 任务中调用（couple_ble_tick 内部会取 bsp_lvgl_lock）。
+// 周期任务：补启心跳扫描 + 心跳超时检测
+// 靠近光效由工牌页自己的定时器刷新，这里不再触碰 LVGL。
 // ============================================================================
 static void couple_tick_task(void *arg)
 {

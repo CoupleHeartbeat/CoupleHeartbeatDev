@@ -33,12 +33,6 @@ void couple_mode_switch(couple_mode_t new_mode)
     case COUPLE_MODE_BADGE:
         couple_badge_exit();
         break;
-    case COUPLE_MODE_HEARTBEAT:
-        couple_heartbeat_exit();
-        break;
-    case COUPLE_MODE_TOUCH:
-        couple_touch_exit();
-        break;
     case COUPLE_MODE_AI:
         couple_ai_exit();
         break;
@@ -52,12 +46,6 @@ void couple_mode_switch(couple_mode_t new_mode)
     switch (new_mode) {
     case COUPLE_MODE_BADGE:
         couple_badge_enter();
-        break;
-    case COUPLE_MODE_HEARTBEAT:
-        couple_heartbeat_enter();
-        break;
-    case COUPLE_MODE_TOUCH:
-        couple_touch_enter();
         break;
     case COUPLE_MODE_AI:
         couple_ai_enter();

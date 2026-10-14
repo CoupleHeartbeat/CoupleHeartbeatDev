@@ -5,8 +5,6 @@ idf_component_register(
          "couple_badge.c"
          "couple_ble.c"
          "couple_auto.c"
-         "couple_heartbeat.c"
-         "couple_touch.c"
          "couple_crypto.c"
          "couple_storage.c"
          "couple_gatt.c"

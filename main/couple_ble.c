@@ -3,11 +3,8 @@
 // NimBLE host 由 couple_gatt.c 独占（全工程单一协议栈）。本模块只负责：
 //   1. 用 couple_ble_build_mfg() 生成心跳制造商数据，交由 couple_gatt.c 拼入可连接广播；
 //   2. 被动扫描配对设备的广播，解析心跳并做 RSSI 滤波测距；
-//   3. 依据“对方在场 / 离开 / 持续极近”驱动模式自动切换（设备端无手动入口）。
+//   3. 维护“对方是否在场 / 信号强度 / 持续极近计数”，供工牌页的靠近光效分档。
 #include "couple_app.h"
-#include "couple_ai.h"
-#include "couple_auto.h"
-#include "bsp_display.h"
 #include "esp_log.h"
 #include "esp_random.h"
 #include "esp_timer.h"
@@ -54,8 +51,6 @@ static bool s_addr_ready;        // 本机 BLE 地址已获取
 static uint8_t s_addr_type;
 static uint8_t s_own_addr[6];    // 本机 BLE 地址，用于过滤自身广播
 static volatile uint16_t s_seq;
-static volatile bool s_user_dismissed;  // 用户主动退出心动模式，抑制自动重入
-static uint32_t s_last_touch_ms;        // 上次自动贴贴时刻，用于冷却
 
 // RSSI 滤波
 static int8_t s_rssi_window[COUPLE_BLE_RSSI_WINDOW];
@@ -324,60 +319,8 @@ static void heartbeat_check(void)
         s_very_close_count = 0;
         s_rssi_window_count = 0;
         s_rssi_ema = 0;
-        // 对方离开即解除“用户主动退出”的抑制，下次靠近可再次自动进入
-        s_user_dismissed = false;
-        s_last_touch_ms = 0;
-        ESP_LOGI(TAG, "对方心跳超时，已断开");
+                ESP_LOGI(TAG, "对方心跳超时，已断开");
     }
-}
-
-// ============================================================================
-// 靠近自动触发（设备端无手动入口）
-// ============================================================================
-static couple_auto_mode_t auto_mode_of(couple_mode_t mode)
-{
-    switch (mode) {
-    case COUPLE_MODE_HEARTBEAT: return COUPLE_AUTO_MODE_HEARTBEAT;
-    case COUPLE_MODE_TOUCH:     return COUPLE_AUTO_MODE_TOUCH;
-    default:                    return COUPLE_AUTO_MODE_BADGE;
-    }
-}
-
-static void auto_trigger(void)
-{
-    if (!s_scanning) return;
-
-    couple_auto_input_t in = {
-        .paired = g_couple_state.pair_info.paired,
-        .partner_present = s_partner_found,
-        .mode = auto_mode_of(g_couple_state.mode),
-        .menu_open = couple_badge_menu_open() || couple_ai_is_active(),
-        .user_dismissed = s_user_dismissed,
-        .very_close_count = s_very_close_count,
-        .now_ms = couple_now_ms(),
-        .last_touch_ms = s_last_touch_ms,
-    };
-
-    couple_auto_action_t action = couple_auto_decide(&in);
-    if (action == COUPLE_AUTO_NONE) return;
-
-    if (!bsp_lvgl_lock(500)) return;
-    switch (action) {
-    case COUPLE_AUTO_ENTER_HEARTBEAT:
-        couple_mode_switch(COUPLE_MODE_HEARTBEAT);
-        break;
-    case COUPLE_AUTO_ENTER_TOUCH:
-        s_last_touch_ms = couple_now_ms();
-        s_very_close_count = 0;
-        couple_mode_switch(COUPLE_MODE_TOUCH);
-        break;
-    case COUPLE_AUTO_EXIT_HEARTBEAT:
-        couple_mode_switch(COUPLE_MODE_BADGE);
-        break;
-    default:
-        break;
-    }
-    bsp_lvgl_unlock();
 }
 
 // ============================================================================
@@ -417,8 +360,6 @@ esp_err_t couple_ble_start(void)
     s_rssi_window_count = 0;
     s_rssi_ema = 0;
     s_very_close_count = 0;
-    s_user_dismissed = false;
-    s_last_touch_ms = 0;
     ESP_LOGI(TAG, "心跳扫描已启动");
     return ESP_OK;
 }
@@ -438,8 +379,6 @@ esp_err_t couple_ble_stop(void)
     s_very_close_count = 0;
     s_rssi_window_count = 0;
     s_rssi_ema = 0;
-    s_user_dismissed = false;
-    s_last_touch_ms = 0;
 
     return ESP_OK;
 }
@@ -455,24 +394,18 @@ int8_t couple_ble_get_rssi(void)
     return (int8_t)(s_rssi_ema / 100);
 }
 
-// 获取贴贴触发计数（供贴贴模式检测使用）
+// 获取持续极近计数（工牌页据此判定“贴贴”档）
 uint8_t couple_ble_very_close_count(void)
 {
     return s_very_close_count;
 }
 
-// 用户主动退出心动模式：在对方离开前不再自动重入
-void couple_ble_mark_user_exit(void)
-{
-    s_user_dismissed = true;
-}
-
-// 周期调用：补启扫描 + 心跳超时检测 + 靠近自动触发
+// 周期调用：补启扫描 + 心跳超时检测
+// 靠近光效由工牌页自己的 500ms 定时器按同一套分档逻辑驱动，此处不再切换模式。
 void couple_ble_tick(void)
 {
     if (!s_scanning && g_couple_state.pair_info.paired) {
         couple_ble_start();
     }
     heartbeat_check();
-    auto_trigger();
 }

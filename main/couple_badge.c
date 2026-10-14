@@ -1,11 +1,13 @@
-// main/couple_badge.c —— 工牌模式：时间 + 姓名 + 电量
+// main/couple_badge.c —— 工牌模式：时间 + 姓名 + 电量 + 靠近光效
 #include "couple_app.h"
+#include "couple_auto.h"
 #include "couple_fonts.h"
 #include "couple_gatt.h"
 #include "bsp_display.h"
 #include "bsp_battery.h"
 #include "esp_log.h"
 #include "lvgl.h"
+#include <stdio.h>
 #include <time.h>
 #include <string.h>
 
@@ -18,7 +20,14 @@ static lv_obj_t *s_name_label;
 static lv_obj_t *s_battery_label;
 static lv_obj_t *s_status_label;
 static lv_obj_t *s_hint_label;      // 底部提示（菜单打开时隐藏）
+static lv_obj_t *s_prox_label;      // 靠近时的一行距离/信号
+static lv_obj_t *s_glow_frame;      // 四周边框光效
 static lv_timer_t *s_timer;
+static lv_timer_t *s_prox_timer;
+static lv_anim_t s_glow_anim;
+static bool s_glow_anim_running;
+static couple_glow_level_t s_glow_level = COUPLE_GLOW_OFF;
+static int s_audio_level = -1;      // 仅档位变化时才重设心跳音效
 static int s_battery_soc;
 static int s_status_restore_ticks;  // >0：临时提示倒计时，到 0 后恢复状态显示
 
@@ -85,6 +94,122 @@ static void update_battery(void)
         char buf[16];
         snprintf(buf, sizeof(buf), "%d%%", soc);
         lv_label_set_text(s_battery_label, buf);
+    }
+}
+
+// ============================================================================
+// 靠近光效：靠近不切页，只在工牌页四周点亮呼吸边框
+// ============================================================================
+static float rssi_to_meters(int8_t rssi)
+{
+    if (rssi >= -40) return 0.3f;
+    if (rssi >= -50) return 0.8f;
+    if (rssi >= -60) return 2.0f;
+    if (rssi >= -70) return 5.0f;
+    if (rssi >= -80) return 10.0f;
+    return 20.0f;
+}
+
+static void glow_opa_anim_cb(void *var, int32_t v)
+{
+    lv_obj_set_style_border_opa((lv_obj_t *)var, (lv_opa_t)v, 0);
+}
+
+static void stop_glow_anim(void)
+{
+    if (s_glow_anim_running) {
+        lv_anim_del(s_glow_frame, glow_opa_anim_cb);
+        s_glow_anim_running = false;
+    }
+}
+
+// 按档位调整边框宽度/颜色/呼吸节奏；档位不变时不做任何事
+static void apply_glow(couple_glow_level_t level)
+{
+    if (level == s_glow_level) return;
+    s_glow_level = level;
+    if (!s_glow_frame) return;
+
+    stop_glow_anim();
+
+    if (level == COUPLE_GLOW_OFF) {
+        lv_obj_set_style_border_opa(s_glow_frame, LV_OPA_TRANSP, 0);
+        return;
+    }
+
+    uint32_t period_ms;
+    int32_t width;
+    uint32_t color;
+    int32_t opa_min;
+    int32_t opa_max;
+    switch (level) {
+    case COUPLE_GLOW_TOUCH:
+        period_ms = 600;  width = 8; color = 0xFF4060; opa_min = 110; opa_max = 255;
+        break;
+    case COUPLE_GLOW_CLOSE:
+        period_ms = 1000; width = 6; color = 0xFF6080; opa_min = 80;  opa_max = 220;
+        break;
+    default:
+        period_ms = 1600; width = 5; color = 0xFF80A0; opa_min = 50;  opa_max = 160;
+        break;
+    }
+
+    lv_obj_set_style_border_width(s_glow_frame, width, 0);
+    lv_obj_set_style_border_color(s_glow_frame, lv_color_hex(color), 0);
+
+    lv_anim_init(&s_glow_anim);
+    lv_anim_set_var(&s_glow_anim, s_glow_frame);
+    lv_anim_set_exec_cb(&s_glow_anim, glow_opa_anim_cb);
+    lv_anim_set_values(&s_glow_anim, opa_min, opa_max);
+    lv_anim_set_time(&s_glow_anim, period_ms / 2);
+    lv_anim_set_playback_time(&s_glow_anim, period_ms / 2);
+    lv_anim_set_repeat_count(&s_glow_anim, LV_ANIM_REPEAT_INFINITE);
+    lv_anim_set_path_cb(&s_glow_anim, lv_anim_path_ease_in_out);
+    lv_anim_start(&s_glow_anim);
+    s_glow_anim_running = true;
+}
+
+// 底部一行小字：距离 + 信号；对方不在时整行隐藏
+static void update_prox_label(void)
+{
+    if (!s_prox_label) return;
+
+    if (!g_couple_state.pair_info.paired || !g_couple_state.partner_connected) {
+        lv_obj_add_flag(s_prox_label, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+    lv_obj_clear_flag(s_prox_label, LV_OBJ_FLAG_HIDDEN);
+
+    int8_t rssi = g_couple_state.partner_rssi;
+    float dist = rssi_to_meters(rssi);
+    char buf[48];
+    if (dist < 1.0f) {
+        snprintf(buf, sizeof(buf), "距离 %.0f cm  信号 %d", dist * 100.0f, rssi);
+    } else {
+        snprintf(buf, sizeof(buf), "距离 %.1f m  信号 %d", dist, rssi);
+    }
+    lv_label_set_text(s_prox_label, buf);
+}
+
+// 500ms 轮询：刷新档位、距离文字与心跳音效
+static void proximity_tick(lv_timer_t *timer)
+{
+    (void)timer;
+
+    couple_auto_input_t in = {
+        .paired = g_couple_state.pair_info.paired,
+        .partner_present = g_couple_state.partner_connected,
+        .rssi = g_couple_state.partner_rssi,
+        .very_close_count = couple_ble_very_close_count(),
+    };
+    couple_glow_level_t level = couple_auto_decide(&in);
+
+    apply_glow(level);
+    update_prox_label();
+
+    if ((int)level != s_audio_level) {
+        s_audio_level = (int)level;
+        couple_audio_play_heartbeat((uint8_t)level);
     }
 }
 
@@ -308,6 +433,26 @@ void couple_badge_enter(void)
     lv_obj_align(s_hint_label, LV_ALIGN_BOTTOM_MID, 0, -20);
     lv_label_set_text(s_hint_label, "短按OK设置 ↑↓音量\n长按OK对话");
 
+    // 靠近时的一行距离/信号（默认隐藏，对方在附近才显示）
+    s_prox_label = lv_label_create(s_scr);
+    lv_obj_set_style_text_font(s_prox_label, font_small, 0);
+    lv_obj_set_style_text_color(s_prox_label, lv_color_hex(0xff8fb0), 0);
+    lv_obj_align(s_prox_label, LV_ALIGN_BOTTOM_MID, 0, -62);
+    lv_obj_add_flag(s_prox_label, LV_OBJ_FLAG_HIDDEN);
+
+    // 四周边框光效：整屏大小的透明对象，只画边框，靠近时呼吸
+    s_glow_frame = lv_obj_create(s_scr);
+    lv_obj_set_size(s_glow_frame, LV_PCT(100), LV_PCT(100));
+    lv_obj_center(s_glow_frame);
+    lv_obj_set_style_bg_opa(s_glow_frame, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_radius(s_glow_frame, 0, 0);
+    lv_obj_set_style_border_width(s_glow_frame, 0, 0);
+    lv_obj_set_style_border_color(s_glow_frame, lv_color_hex(0xff80a0), 0);
+    lv_obj_set_style_border_opa(s_glow_frame, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_pad_all(s_glow_frame, 0, 0);
+    lv_obj_clear_flag(s_glow_frame, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(s_glow_frame, LV_OBJ_FLAG_CLICKABLE);
+
     lv_scr_load(s_scr);
 
     // 初始更新
@@ -315,6 +460,12 @@ void couple_badge_enter(void)
 
     // 启动定时器（1秒刷新）
     s_timer = lv_timer_create(tick, 1000, NULL);
+
+    // 靠近光效：进入时先按当前状态点亮一次，再交给 500ms 轮询
+    s_glow_level = COUPLE_GLOW_OFF;
+    s_audio_level = -1;
+    proximity_tick(NULL);
+    s_prox_timer = lv_timer_create(proximity_tick, 500, NULL);
 }
 
 void couple_badge_exit(void)
@@ -325,6 +476,17 @@ void couple_badge_exit(void)
         lv_timer_delete(s_timer);
         s_timer = NULL;
     }
+    if (s_prox_timer) {
+        lv_timer_delete(s_prox_timer);
+        s_prox_timer = NULL;
+    }
+
+    // 动画引用光效对象，必须在删屏之前停掉
+    stop_glow_anim();
+    couple_audio_play_heartbeat(0);
+    s_glow_level = COUPLE_GLOW_OFF;
+    s_audio_level = -1;
+
     if (s_scr) {
         // 菜单面板是 s_scr 的子对象，会随屏幕一并删除，这里只清指针
         s_panel = NULL;
@@ -339,6 +501,8 @@ void couple_badge_exit(void)
         s_battery_label = NULL;
         s_status_label = NULL;
         s_hint_label = NULL;
+        s_prox_label = NULL;
+        s_glow_frame = NULL;
     }
     s_ui = UI_IDLE;
 }
@@ -427,10 +591,4 @@ void couple_badge_update_time(void)
     if (s_timer) {
         tick(s_timer);
     }
-}
-
-// 设置菜单（含关于设备 / 恢复出厂确认）打开时，靠近自动切换须让路
-bool couple_badge_menu_open(void)
-{
-    return s_ui != UI_IDLE;
 }

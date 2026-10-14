@@ -8,10 +8,9 @@
 // ============================================================================
 // 应用模式
 // ============================================================================
+// 靠近不再单独成一个模式：对方在附近只是工牌页上的边缘光效（见 couple_auto.h）。
 typedef enum {
-    COUPLE_MODE_BADGE = 0,       // 工牌模式：时间 + 姓名 + 电量
-    COUPLE_MODE_HEARTBEAT,       // 心动模式：BLE 心跳 + RSSI 光影
-    COUPLE_MODE_TOUCH,           // 贴贴模式：爱意动画
+    COUPLE_MODE_BADGE = 0,       // 工牌模式：时间 + 姓名 + 电量 + 靠近光效
     COUPLE_MODE_AI,              // AI 对话：长按 OK 进入，语音问答
 } couple_mode_t;
 
@@ -71,7 +70,6 @@ void couple_badge_enter(void);
 void couple_badge_exit(void);
 void couple_badge_key(bsp_btn_t btn, bsp_btn_ev_t ev);
 void couple_badge_update_time(void);
-bool couple_badge_menu_open(void);   // 设置菜单是否处于打开状态
 
 // ============================================================================
 // BLE 心跳通信（couple_ble.c）
@@ -82,26 +80,11 @@ esp_err_t couple_ble_start(void);
 esp_err_t couple_ble_stop(void);
 bool couple_ble_is_active(void);
 int8_t couple_ble_get_rssi(void);
+// 连续极近计数：工牌页据此判定是否进入“贴贴”档光效
 uint8_t couple_ble_very_close_count(void);
 void couple_ble_tick(void);
 // 生成心跳制造商数据，交由 couple_gatt.c 拼入广播；返回写入长度，未配对时为 0
 uint8_t couple_ble_build_mfg(uint8_t *buf, uint8_t buf_len);
-// 用户主动退出心动模式：在对方离开前不再自动重入
-void couple_ble_mark_user_exit(void);
-
-// ============================================================================
-// 心动模式（couple_heartbeat.c）
-// ============================================================================
-void couple_heartbeat_enter(void);
-void couple_heartbeat_exit(void);
-void couple_heartbeat_key(bsp_btn_t btn, bsp_btn_ev_t ev);
-
-// ============================================================================
-// 贴贴模式（couple_touch.c）
-// ============================================================================
-void couple_touch_enter(void);
-void couple_touch_exit(void);
-void couple_touch_key(bsp_btn_t btn, bsp_btn_ev_t ev);
 
 // ============================================================================
 // 加密模块（couple_crypto.c）

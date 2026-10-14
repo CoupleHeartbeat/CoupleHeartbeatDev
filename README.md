@@ -12,13 +12,13 @@ on the FoloToy AI Passport board (ESP32-C3, 8 MB flash, no PSRAM) with ESP-IDF
 ## What it does
 
 - **Badge** - clock, name and battery level on the main screen.
-- **Heartbeat** - every device broadcasts a BLE heartbeat carrying its own
-  identity. When the paired device is in range the screen switches to a
-  heartbeat light effect whose pace follows signal strength, so the closer you
-  are the faster it beats. Leaving the range returns to the badge screen
-  automatically; there is no manual entry point.
-- **Touch** - keeping both devices very close for a moment plays an affection
-  animation.
+- **Proximity glow** - every device broadcasts a BLE heartbeat carrying its own
+  identity. When the paired device comes in range nothing switches page: the
+  badge screen stays up and a light effect breathes along all four edges of the
+  screen. The closer the two devices are, the brighter and faster it gets, and
+  the heartbeat tone quickens with it; holding them right next to each other
+  raises it to its strongest setting. One line under the name shows the current
+  distance and signal strength, and it hides again once the partner leaves.
 - **AI dialog** - a long press on OK opens the voice page. Speaking records
   audio, transcribes it, asks the model and speaks the answer back through the
   speaker.
