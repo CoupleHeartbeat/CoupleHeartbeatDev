@@ -1,0 +1,25 @@
+idf_component_register(
+    SRCS "main.c"
+         "couple_audio.c"
+         "couple_mode_manager.c"
+         "couple_badge.c"
+         "couple_ble.c"
+         "couple_auto.c"
+         "couple_heartbeat.c"
+         "couple_touch.c"
+         "couple_crypto.c"
+         "couple_storage.c"
+         "couple_gatt.c"
+         "couple_wifi.c"
+         "couple_wifi_parse.c"
+         "couple_ai.c"
+         "couple_ai_json.c"
+         "couple_mimo.c"
+         "couple_fonts.c"
+         "demo_radio.c"
+         "${CMAKE_CURRENT_LIST_DIR}/../assets/fonts/couple_font_16.c"
+         "${CMAKE_CURRENT_LIST_DIR}/../assets/fonts/couple_font_20.c"
+    INCLUDE_DIRS "."
+    REQUIRES bsp bt esp_event esp_hw_support esp_timer esp_wifi esp_http_client esp-tls
+             lwip nvs_flash mbedtls json
+)

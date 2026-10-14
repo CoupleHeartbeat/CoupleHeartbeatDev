@@ -1,0 +1,70 @@
+# --- 目标芯片 ---
+CONFIG_IDF_TARGET="esp32c3"
+# 注:ESP32-C3 无 PSRAM,故不设 CONFIG_SPIRAM。
+
+# --- Flash ---
+# FoloToy AI Passport 当前产品/固件基线使用 8MB Flash。
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+# 固定 8MB 镜像头，关闭 detect，便于 idf.py merge-bin。
+CONFIG_ESPTOOLPY_HEADER_FLASHSIZE_UPDATE=n
+# 默认模板只保留 NVS、PHY data 和占用剩余空间的 factory app；用户可按需修改。
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
+
+# --- 控制台:USB-Serial-JTAG(C3 原生 USB,GPIO18/19)---
+# 不用 UART0:其默认 TX=GPIO21 与本板背光引脚冲突。
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+
+# --- LVGL ---
+CONFIG_LV_COLOR_DEPTH_16=y
+# 20 ms display refresh period targets up to 50 FPS when rendering and SPI
+# transfer complete within the same budget.
+CONFIG_LV_DEF_REFR_PERIOD=20
+CONFIG_LV_FONT_MONTSERRAT_14=y
+CONFIG_LV_FONT_MONTSERRAT_20=y
+# 内置 CJK 子集（中文支持）
+CONFIG_LV_FONT_SOURCE_HAN_SANS_SC_16_CJK=y
+# LVGL 内置 malloc 池大小(KB)。它是独立静态区、不与系统堆共享,配大了会白白占用 RAM。
+# 情侣应用含画布动画，适当增加
+CONFIG_LV_MEM_SIZE_KILOBYTES=32
+
+# --- 系统 ---
+CONFIG_FREERTOS_HZ=1000
+
+# --- Bluetooth LE / NimBLE ---
+# 情侣互动需要同时广播和扫描，启用四个角色
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+CONFIG_BT_NIMBLE_ROLE_CENTRAL=y
+CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=y
+CONFIG_BT_NIMBLE_ROLE_BROADCASTER=y
+CONFIG_BT_NIMBLE_ROLE_OBSERVER=y
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
+CONFIG_BT_NIMBLE_HOST_BASED_PRIVACY=n
+CONFIG_BT_NIMBLE_NVS_PERSIST=n
+# GATT 写入回调在 NimBLE host 任务栈上同步执行 cJSON 解析（栈上 json_buf[256]）
+# 与 NVS 提交（含 flash 写，调用链深）。默认 4096 会栈溢出触发 panic 重启，
+# 表现为 App 写入配对数据时设备断开连接，故扩到 8192。
+CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE=8192
+
+# --- mbedTLS（AES 加密需要）---
+CONFIG_MBEDTLS_CIPHER_C=y
+CONFIG_MBEDTLS_AES_C=y
+
+# --- Wi-Fi（App 经 BLE 下发凭据，设备以 STA 身份连接）---
+# 未配网的设备不启动射频；一旦下发凭据即启动 STA。
+CONFIG_ESP_WIFI_ENABLED=y
+# 心跳广播(BLE) 与 Wi-Fi STA 共用 2.4G 射频，必须开启软件共存，
+# 否则两者互相抢占会导致心跳丢包或 Wi-Fi 握手失败。
+CONFIG_ESP_COEX_ENABLED=y
+CONFIG_ESP_COEX_SW_COEXIST_ENABLE=y
+
+# --- 内存（无 PSRAM，Wi-Fi + BLE + TLS 需同时驻留）---
+# HTTPS 走证书包校验，不做 insecure 连接
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+# TLS 记录长度默认 16KB；AI 对话的响应是按块读取的，缩到 4KB 可省下约 12KB 堆。
+# 注意：4KB 是 mbedtls 单条记录上限，不影响总响应长度。
+CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=4096
+CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=2048

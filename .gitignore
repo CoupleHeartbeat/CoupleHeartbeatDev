@@ -1,0 +1,12 @@
+build/
+sdkconfig
+sdkconfig.old
+managed_components/
+.vscode/
+.idea/
+
+# 本地临时产物
+.DS_Store
+__pycache__/
+*.pyc
+*.bin
