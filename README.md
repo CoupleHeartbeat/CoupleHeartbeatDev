@@ -56,6 +56,25 @@ idf.py merge-bin -o FoloToy-AI-Passport-full.bin
 
 Write the merged image at offset `0x0` with a data-capable USB cable.
 
+### Flash layout and data preservation
+
+| Name | Type | Offset | Size | Purpose |
+| --- | --- | --- | --- | --- |
+| factory | app | 0x10000 | ~4.94 MiB | application |
+| nvs | data | 0x500000 | 24 KiB | pairing / Wi-Fi / API key / volume |
+| phy_init | data | 0x506000 | 4 KiB | RF calibration |
+| user | data (FAT) | 0x507000 | ~2.97 MiB | user files, mounted at `/userdata` |
+
+All data partitions sit **after** the application, and the merged image only
+covers `0x0` up to the end of the application image, so flashing the merged
+image preserves NVS settings and user files. The `user` partition is a
+wear-levelled FAT volume mounted at `/userdata`; it is formatted automatically
+on first use.
+
+One-time note: migrating from the old layout (NVS at `0x9000`) erases the old
+NVS content once — re-pair the device and re-enter Wi-Fi credentials after
+flashing this change for the first time.
+
 ## Self checks
 
 ```bash

@@ -10,6 +10,7 @@
 #include "couple_fonts.h"
 #include "couple_gatt.h"
 #include "couple_power.h"
+#include "couple_userfs.h"
 #include "couple_wifi.h"
 #include "bsp_i2c.h"
 #include "bsp_display.h"
@@ -220,6 +221,9 @@ void app_main(void)
     if (storage_err != ESP_OK) {
         ESP_LOGE(TAG, "存储初始化失败: %s", esp_err_to_name(storage_err));
     }
+
+    // 挂载用户数据分区（FAT，刷机不清空）；失败不阻塞启动
+    couple_userfs_init();
 
     // 加载配对信息
     couple_pair_info_t pair_info;

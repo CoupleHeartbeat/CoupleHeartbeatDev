@@ -1,4 +1,10 @@
 # Name,   Type, SubType, Offset,   Size,     Flags
-nvs,      data, nvs,     0x9000,   0x6000,
-phy_init, data, phy,     0xf000,   0x1000,
-factory,  app,  factory, 0x10000,  0x7f0000,
+# 布局原则：所有数据分区（nvs/phy/user）位于应用之后——合并镜像只覆盖
+# 0x0..应用结尾，刷写固件不会清空数据分区（一次性迁移见 README）。
+# factory: 应用 ~4.94MiB（当前用 ~1.9MiB）
+# nvs: 配对/Wi-Fi/API Key 等配置；phy_init: 射频校准
+# user: 用户数据 ~2.97MiB（FAT + 磨损均衡），挂载 /userdata
+factory,  app,  factory, 0x10000,  0x4f0000,
+nvs,      data, nvs,     0x500000, 0x6000,
+phy_init, data, phy,     0x506000, 0x1000,
+user,     data, fat,     0x507000, 0x2f9000,
