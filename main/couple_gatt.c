@@ -4,7 +4,9 @@
 #include "couple_ai.h"
 #include "couple_wifi.h"
 #include "couple_wifi_parse.h"
+#include "couple_time.h"
 #include "bsp_battery.h"
+#include "bsp_display.h"
 #include "demo_radio.h"
 #include "cJSON.h"
 #include "esp_log.h"
@@ -24,6 +26,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/time.h>
+#include <time.h>
 
 static const char *TAG = "couple_gatt";
 
@@ -38,6 +42,7 @@ static const char *TAG = "couple_gatt";
 // 特征值 0xFFE5: Wi-Fi 状态 (Read/Notify)
 // 特征值 0xFFE6: AI 配置 (Read/Write)：写 API Key，读是否已配置（绝不回明文）
 // 特征值 0xFFE7: Wi-Fi 扫描 (Read/Write)：写 {"scan":true} 触发，读回候选网络
+// 特征值 0xFFE8: 时间同步 (Write)：写 {"unix":秒,"tz_offset":秒} 校准系统时间
 // ============================================================================
 
 #define GATT_SVC_UUID          0xFFE0
@@ -48,6 +53,7 @@ static const char *TAG = "couple_gatt";
 #define GATT_CHR_WIFI_STA_UUID 0xFFE5
 #define GATT_CHR_AI_CFG_UUID   0xFFE6
 #define GATT_CHR_WIFI_SCAN_UUID 0xFFE7
+#define GATT_CHR_TIME_UUID     0xFFE8
 
 #define COUPLE_GATT_DEV_NAME_PREFIX "AI-Passport"
 #define COUPLE_GATT_DEV_NAME_MAX    20
@@ -166,13 +172,20 @@ static const struct ble_gatt_svc_def s_gatt_svcs[] = {
                 .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_WRITE,
             },
             {
-                // 0xFFE7 —— Wi-Fi 扫描（Read/Write）
-                // 写 {"scan":true} 触发一次扫描；读取候选网络列表（按信号降序）
-                .uuid = BLE_UUID16_DECLARE(GATT_CHR_WIFI_SCAN_UUID),
-                .access_cb = chr_access,
-                .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_WRITE,
-            },
-            { 0 },  // 特征值列表结束
+            // 0xFFE7 —— Wi-Fi 扫描（Read/Write）
+            // 写 {"scan":true} 触发一次扫描；读取候选网络列表（按信号降序）
+            .uuid = BLE_UUID16_DECLARE(GATT_CHR_WIFI_SCAN_UUID),
+            .access_cb = chr_access,
+            .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_WRITE,
+        },
+        {
+            // 0xFFE8 —— 时间同步（Write）
+            // 写 {"unix":UTC秒,"tz_offset":时区偏移秒} 校准系统时间
+            .uuid = BLE_UUID16_DECLARE(GATT_CHR_TIME_UUID),
+            .access_cb = chr_access,
+            .flags = BLE_GATT_CHR_F_WRITE,
+        },
+        { 0 },  // 特征值列表结束
         },
     },
     { 0 },  // 服务列表结束
@@ -668,6 +681,50 @@ static int chr_access(uint16_t conn_handle, uint16_t attr_handle,
                 ESP_LOGW(TAG, "扫描请求入队失败: %s", esp_err_to_name(err));
                 return BLE_ATT_ERR_UNLIKELY;
             }
+            return 0;
+
+        } else if (uuid16 == GATT_CHR_TIME_UUID) {
+            // 时间同步：{"unix":UTC秒,"tz_offset":时区偏移秒}
+            char json_buf[64];
+            if (len >= sizeof(json_buf)) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+            memcpy(json_buf, data, len);
+            json_buf[len] = '\0';
+
+            long long unix_sec = 0;
+            long long tz_off = 0;
+            couple_time_parse_result_t pr =
+                couple_time_parse(json_buf, len, &unix_sec, &tz_off);
+            if (pr != COUPLE_TIME_PARSE_OK) {
+                ESP_LOGW(TAG, "时间同步解析失败: %d", (int)pr);
+                return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+            }
+
+            // 1) 设置系统时间（UTC 秒）
+            struct timeval tv = { .tv_sec = (time_t)unix_sec, .tv_usec = 0 };
+            settimeofday(&tv, NULL);
+
+            // 2) 按 tz_offset 重建 POSIX TZ（POSIX 偏移符号与东为正相反）
+            long off = (long)tz_off;
+            char tz_str[16];
+            char sign = (off >= 0) ? '-' : '+';
+            long abs_off = (off >= 0) ? off : -off;
+            long h = abs_off / 3600;
+            long m = (abs_off % 3600) / 60;
+            if (m > 0) {
+                snprintf(tz_str, sizeof(tz_str), "CST%c%ld:%02ld", sign, h, m);
+            } else {
+                snprintf(tz_str, sizeof(tz_str), "CST%c%ld", sign, h);
+            }
+            setenv("TZ", tz_str, 1);
+            tzset();
+
+            // 3) 刷新工牌页时间显示（GATT 回调在 NimBLE host 任务，需加锁）
+            if (bsp_lvgl_lock(500)) {
+                couple_badge_update_time();
+                bsp_lvgl_unlock();
+            }
+
+            ESP_LOGI(TAG, "时间已同步: unix=%lld tz=%lds", unix_sec, (long)tz_off);
             return 0;
         }
 

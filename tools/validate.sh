@@ -49,6 +49,10 @@ run_static_checks() {
         -o "${test_dir}/test_couple_wifi_parse"
     "${test_dir}/test_couple_wifi_parse"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_couple_time.c main/couple_time.c \
+        -o "${test_dir}/test_couple_time"
+    "${test_dir}/test_couple_time"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
         tests/test_couple_wifi_scan.c main/couple_wifi_scan.c \
         -o "${test_dir}/test_couple_wifi_scan"
     "${test_dir}/test_couple_wifi_scan"

@@ -42,6 +42,7 @@ characteristics:
 | 0xFFE5 | read / notify | Wi-Fi provisioning state (state, SSID, IP, signal) |
 | 0xFFE6 | read / write | model API key; reads only report whether one is configured |
 | 0xFFE7 | read / write | nearby Wi-Fi scan: write a scan request, read the candidate list |
+| 0xFFE8 | write | time sync: write `{"unix":seconds,"tz_offset":seconds}` to set system time |
 
 A read never returns the API key and the key is never written to the log.
 
