@@ -146,7 +146,7 @@ static void ai_render_state(void)
     case AI_STATE_IDLE:
         lv_label_set_text(s_state_label, "待机");
         lv_obj_set_style_text_color(s_state_label, lv_color_hex(0x9a9ab8), 0);
-        lv_label_set_text(s_hint_label, "短按OK说话\n长按OK返回");
+        lv_label_set_text(s_hint_label, "按住OK说话\n单击OK返回");
         break;
     case AI_STATE_LISTENING: {
         char buf[32];
@@ -155,7 +155,7 @@ static void ai_render_state(void)
                  s_listen_seconds_left > 0 ? s_listen_seconds_left : 0);
         lv_label_set_text(s_state_label, buf);
         lv_obj_set_style_text_color(s_state_label, lv_color_hex(0xff6b9d), 0);
-        lv_label_set_text(s_hint_label, "再短按OK结束");
+        lv_label_set_text(s_hint_label, "松手发送");
         break;
     }
     case AI_STATE_THINKING:
@@ -171,7 +171,7 @@ static void ai_render_state(void)
     case AI_STATE_ERROR:
         lv_label_set_text(s_state_label, s_error_text[0] ? s_error_text : "连接失败");
         lv_obj_set_style_text_color(s_state_label, lv_color_hex(0xff6b6b), 0);
-        lv_label_set_text(s_hint_label, "短按OK重试\n长按OK返回");
+        lv_label_set_text(s_hint_label, "按住OK重试\n单击OK返回");
         break;
     }
 }
@@ -303,7 +303,8 @@ static void ai_run_turn(void)
     s_user_text[0] = '\0';
     s_reply_text[0] = '\0';
     s_error_text[0] = '\0';
-    s_stop_requested = false;
+    // s_stop_requested 不在这里清除：松手可能发生在 START 入队后、
+    // 录音开始前的窗口，在按键入口（长按投递 START 时）清除更安全。
     couple_mimo_clear_cancel();
     ai_publish();
 
@@ -468,26 +469,46 @@ bool couple_ai_is_active(void)
 // ============================================================================
 void couple_ai_key(bsp_btn_t btn, bsp_btn_ev_t ev)
 {
-    (void)btn;
+    if (btn != BSP_BTN_OK) return;
 
-    if (ev == BSP_BTN_LONG && btn == BSP_BTN_OK) {
-        // 长按返回工牌页；模式切换会调用 couple_ai_exit 释放本页
-        couple_mode_switch(COUPLE_MODE_BADGE);
-        return;
-    }
-    if (ev != BSP_BTN_CLICK || btn != BSP_BTN_OK) return;
-
-    switch (s_state) {
-    case AI_STATE_IDLE:
-    case AI_STATE_ERROR:
-        (void)ai_post(AI_CMD_START);
+    switch (ev) {
+    case BSP_BTN_LONG:
+        // 按住超过阈值（长按）：待机/出错时开始录音；思考/播报中长按返回
+        switch (s_state) {
+        case AI_STATE_IDLE:
+        case AI_STATE_ERROR:
+            // 清掉上一轮残留的停止请求，保证新录音不会刚开始就被结束
+            s_stop_requested = false;
+            (void)ai_post(AI_CMD_START);
+            break;
+        case AI_STATE_THINKING:
+        case AI_STATE_SPEAKING:
+            // 长按返回工牌页；模式切换会调用 couple_ai_exit 释放本页
+            couple_mode_switch(COUPLE_MODE_BADGE);
+            break;
+        case AI_STATE_LISTENING:
+            // 录音中忽略长按：必须松手才发送
+            break;
+        }
         break;
-    case AI_STATE_LISTENING:
+
+    case BSP_BTN_RELEASE:
+        // 松手发送：立即置位，让录音循环在下一个检查点收尾；
+        // 即使录音尚未开始（按键入口已清位），进入录音循环也会立刻结束。
+        // 同时投递 STOP 兜底（worker 空闲时同样会置位该标志）。
+        s_stop_requested = true;
         (void)ai_post(AI_CMD_STOP);
         break;
-    case AI_STATE_THINKING:
-    case AI_STATE_SPEAKING:
-        // 请求/播放中不做打断，避免半截请求；长按可返回
+
+    case BSP_BTN_CLICK:
+        // 短按（未达长按阈值）：待机/出错时返回工牌页
+        if (s_state == AI_STATE_IDLE || s_state == AI_STATE_ERROR) {
+            couple_mode_switch(COUPLE_MODE_BADGE);
+        }
+        break;
+
+    default:
+        // BSP_BTN_PRESS 等事件不处理：按下不开始录音，等长按判定
         break;
     }
 }

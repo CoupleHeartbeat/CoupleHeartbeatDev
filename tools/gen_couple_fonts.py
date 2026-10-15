@@ -85,9 +85,9 @@ UI_STRINGS = [
     "即将休眠", "即将休眠\n按任意键取消",
     "名称:", "固件: v1.0.0", "短按OK设置", "长按OK对话", "↑↓音量",
     "长按OK返回", "OK返回",
-    # AI dialog page (long press OK)
-    "AI 对话", "待机", "聆听中%s %d", "再短按OK结束", "思考中...", "播放中...",
-    "连接失败", "短按OK说话\n长按OK返回", "短按OK重试\n长按OK返回",
+    # AI dialog page (hold OK to record, release to send)
+    "AI 对话", "待机", "聆听中%s %d", "松手发送", "思考中...", "播放中...",
+    "连接失败", "按住OK说话\n单击OK返回", "按住OK重试\n单击OK返回",
     "请先在App配置Key", "请先在App配置Wi-Fi", "没听清，请再说一次",
 ]
 
