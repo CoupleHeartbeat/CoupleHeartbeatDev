@@ -5,6 +5,7 @@
 //   2. 被动扫描配对设备的广播，解析心跳并做 RSSI 滤波测距；
 //   3. 维护“对方是否在场 / 信号强度 / 持续极近计数”，供工牌页的靠近光效分档。
 #include "couple_app.h"
+#include "couple_gatt.h"
 #include "esp_log.h"
 #include "esp_random.h"
 #include "esp_timer.h"
@@ -333,6 +334,11 @@ esp_err_t couple_ble_start(void)
     if (!g_couple_state.pair_info.paired) {
         return ESP_ERR_INVALID_STATE;  // 未配对无对方可寻
     }
+    if (!couple_gatt_ready()) {
+        // NimBLE host 未初始化成功（如堆不足 init 失败）时，
+        // 调用 host API 会命中未初始化的锁直接崩溃，必须挡住。
+        return ESP_ERR_INVALID_STATE;
+    }
 
     if (!s_addr_ready) {
         // NimBLE host 由 couple_gatt.c 持有；同步完成前 infer_auto 返回无地址，
@@ -404,7 +410,8 @@ uint8_t couple_ble_very_close_count(void)
 // 靠近光效由工牌页自己的 500ms 定时器按同一套分档逻辑驱动，此处不再切换模式。
 void couple_ble_tick(void)
 {
-    if (!s_scanning && g_couple_state.pair_info.paired) {
+    if (!s_scanning && g_couple_state.pair_info.paired
+        && couple_gatt_ready()) {
         couple_ble_start();
     }
     heartbeat_check();

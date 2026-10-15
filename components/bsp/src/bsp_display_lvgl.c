@@ -9,7 +9,9 @@
 
 static const char *TAG = "bsp_lvgl";
 
-#define BSP_LVGL_DRAW_BUFFER_LINES 40
+// 第五轮内存修复：单缓冲从 40 行(19.2KB)降到 24 行(11.5KB)，把 7.7KB 归还系统堆，
+// 供 AI 语音的 TLS 握手使用。代价是整屏刷新窗口数由 8 次增到 14 次，SPI 仍充裕。
+#define BSP_LVGL_DRAW_BUFFER_LINES 24
 
 static lv_display_t *s_disp;
 static bool s_port_initialized;

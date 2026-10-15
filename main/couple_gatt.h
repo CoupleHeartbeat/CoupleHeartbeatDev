@@ -63,6 +63,15 @@ void couple_gatt_new_pair_code(void);
  */
 bool couple_gatt_app_connected(void);
 
+/**
+ * @brief NimBLE host 是否已初始化成功
+ *
+ * couple_gatt_init 失败（如堆不足导致 hci inits failed）时返回 false。
+ * 依赖 NimBLE host 的调用方（如心跳扫描）必须先查询本接口，
+ * 避免对未初始化的 host 调用 API 触发 Load access fault。
+ */
+bool couple_gatt_ready(void);
+
 #ifdef __cplusplus
 }
 #endif

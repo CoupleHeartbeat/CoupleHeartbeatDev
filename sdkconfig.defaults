@@ -26,9 +26,15 @@ CONFIG_LV_FONT_MONTSERRAT_14=y
 CONFIG_LV_FONT_MONTSERRAT_20=y
 # 内置 CJK 子集（中文支持）
 CONFIG_LV_FONT_SOURCE_HAN_SANS_SC_16_CJK=y
-# LVGL 内置 malloc 池大小(KB)。它是独立静态区、不与系统堆共享,配大了会白白占用 RAM。
-# 情侣应用含画布动画，适当增加
-CONFIG_LV_MEM_SIZE_KILOBYTES=32
+# 第五轮内存修复：LVGL 改用标准 C 库 malloc，不再预留独立静态内存池。
+# 内置池(lv_mem_core_builtin.c 的 work_mem_int)会固定占掉 32KB .bss，
+# 该静态区与系统堆互不相通；本应用 UI 仅少量控件、无画布，该池大半闲置，
+# 却把 NimBLE 主机初始化可用的内部 8BIT 堆压到临界，导致 ble_hs.c 的
+# ble_gatts_init()/ble_gattc_init() 中约 64 字节的 calloc 失败
+# (ENOMEM → SYSINIT_PANIC_ASSERT(rc == 0) 崩溃重启)。
+# 改为按需从系统堆分配后，约 30KB RAM 归还堆，供 Wi-Fi/TLS 复用。
+# CONFIG_LV_USE_BUILTIN_MALLOC is not set
+CONFIG_LV_USE_CLIB_MALLOC=y
 
 # --- 系统 ---
 CONFIG_FREERTOS_HZ=1000
@@ -51,6 +57,16 @@ CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE=8192
 # Wi-Fi 扫描结果（最多约 13 条）要一次读回，默认 256 的 ATT MTU 装不下，
 # 提到 512；App 侧读取扫描特征时也会请求 512。
 CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=512
+# NimBLE 缓冲池裁剪（第四轮建立、第五轮加深）：
+# esp_wifi_init 静态占用约 40KB 后，BT controller init/enable 的分散小分配
+# 会把剩余最大连续块切碎；此时 hci init 中 MSYS_2(24×320≈7.5KB) 与
+# ACL 池(24×~300B≈7KB) 的单笔连续分配失败，日志表现为 "hci inits failed"。
+# 本应用仅 1 个连接、GATT 小数据（凭据下发/状态同步），故持续下调：
+# 12/12/20 → 8/8/12，单连接 + MTU 512 的短报文场景完全够用，
+# 再省约 4.5KB 堆作为 AI 语音 TLS 握手的余量。
+CONFIG_BT_NIMBLE_MSYS_2_BLOCK_COUNT=8
+CONFIG_BT_NIMBLE_TRANSPORT_ACL_FROM_LL_COUNT=8
+CONFIG_BT_NIMBLE_TRANSPORT_EVT_COUNT=12
 
 # --- mbedTLS（AES 加密需要）---
 CONFIG_MBEDTLS_CIPHER_C=y
@@ -71,3 +87,12 @@ CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
 # 注意：4KB 是 mbedtls 单条记录上限，不影响总响应长度。
 CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=4096
 CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=2048
+# Wi-Fi 缓冲裁剪：默认值(静态RX 10 + 动态RX/TX 32×2 + AMPDU 聚合)在 NimBLE+LVGL+音频
+# 全部就绪后已把空闲堆压到约 15KB，esp_wifi_init 分配 10 个静态 RX buffer 直接失败
+# (esf_buf_setup_static: alloc eb fail)，连带 AI 对话初始化 NO_MEM。
+# 本应用 Wi-Fi 仅用于 AI 的 HTTPS 小包请求，减半缓冲并关闭 AMPDU 聚合无吞吐损失。
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=6
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=16
+CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=16
+CONFIG_ESP_WIFI_AMPDU_TX_ENABLED=n
+CONFIG_ESP_WIFI_AMPDU_RX_ENABLED=n

@@ -239,6 +239,22 @@ void app_main(void)
     couple_mode_init();
     memcpy(&g_couple_state.pair_info, &pair_info, sizeof(pair_info));
 
+    // 初始化 Wi-Fi 配网驱动与 AI 对话任务。
+    // 必须放在音频/GATT(NimBLE) 之前：两者初始化后仅剩约 15KB 空闲堆
+    // （实测 esp_wifi_init 的静态 RX buffer 分配失败 ESP_ERR_NO_MEM，
+    // 连带 8KB AI 任务栈创建失败），而 Wi-Fi/AI 均只依赖 NVS，不依赖音频和蓝牙。
+    // 这里只做 esp_wifi_init（驱动静态结构）；射频启动（autoconnect 入队）
+    // 推迟到 NimBLE 初始化成功之后，避免 Wi-Fi 运行时缓冲抢占 MSYS 连续堆。
+    esp_err_t wifi_err = couple_wifi_init();
+    if (wifi_err != ESP_OK) {
+        ESP_LOGW(TAG, "Wi-Fi 配网初始化失败: %s", esp_err_to_name(wifi_err));
+    }
+
+    esp_err_t ai_err = couple_ai_init();
+    if (ai_err != ESP_OK) {
+        ESP_LOGW(TAG, "AI 对话初始化失败: %s", esp_err_to_name(ai_err));
+    }
+
     // 初始化按键
     esp_err_t input_err = input_dispatch_init();
     esp_err_t button_err = input_err == ESP_OK
@@ -277,18 +293,10 @@ void app_main(void)
         ESP_LOGW(TAG, "GATT 服务初始化失败: %s", esp_err_to_name(gatt_err));
     }
 
-    // 初始化 Wi-Fi 配网（App 经 BLE 下发凭据；此处不启动射频）
-    esp_err_t wifi_err = couple_wifi_init();
-    if (wifi_err != ESP_OK) {
-        ESP_LOGW(TAG, "Wi-Fi 配网初始化失败: %s", esp_err_to_name(wifi_err));
-    } else if (couple_wifi_autoconnect() == ESP_OK) {
+    // NimBLE 拿到内存后再启动 Wi-Fi 射频（autoconnect 仅入队，
+    // 由 Wi-Fi 任务异步完成连接，不阻塞启动流程）
+    if (wifi_err == ESP_OK && couple_wifi_autoconnect() == ESP_OK) {
         ESP_LOGI(TAG, "使用已保存的 Wi-Fi 凭据自动连接");
-    }
-
-    // 初始化 AI 对话工作任务（长按 OK 进入页面后才会真正发请求）
-    esp_err_t ai_err = couple_ai_init();
-    if (ai_err != ESP_OK) {
-        ESP_LOGW(TAG, "AI 对话初始化失败: %s", esp_err_to_name(ai_err));
     }
 
     // 启动心跳扫描（依赖 GATT 持有的 NimBLE host；host 未同步时由 tick 重试）

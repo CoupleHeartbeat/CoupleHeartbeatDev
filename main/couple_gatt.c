@@ -23,6 +23,9 @@
 #include "services/gatt/ble_svc_gatt.h"
 #include "esp_random.h"
 #include "esp_mac.h"
+#include "esp_heap_caps.h"
+#include "esp_system.h"
+#include "esp_bt.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -116,6 +119,11 @@ void couple_gatt_new_pair_code(void)
 bool couple_gatt_app_connected(void)
 {
     return s_connected;
+}
+
+bool couple_gatt_ready(void)
+{
+    return s_initialized;
 }
 
 // ============================================================================
@@ -947,9 +955,23 @@ esp_err_t couple_gatt_init(void)
         return err;
     }
 
+    // MSYS 缓冲池（MSYS_1+MSYS_2 约 11KB）要求连续堆，init 失败时
+    // 打出空闲堆与最大连续块，用于定位内存时序问题。
+    ESP_LOGI(TAG, "NimBLE init 前空闲堆: %u 字节, 最大连续块: %u 字节",
+             (unsigned)esp_get_free_heap_size(),
+             (unsigned)heap_caps_get_largest_free_block(
+                 MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+
     err = nimble_port_init();
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "NimBLE 初始化失败: %s", esp_err_to_name(err));
+        // 失败时打出堆状态与 controller 状态：区分"堆碎片导致大单笔分配失败"
+        // 与"controller 未启用"两类根因，供下一轮修复定位。
+        ESP_LOGE(TAG, "NimBLE 初始化失败: %s (空闲堆 %u, 最大连续块 %u, controller=%d)",
+                 esp_err_to_name(err),
+                 (unsigned)esp_get_free_heap_size(),
+                 (unsigned)heap_caps_get_largest_free_block(
+                     MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                 (int)esp_bt_controller_get_status());
         s_running = false;
         return err;
     }

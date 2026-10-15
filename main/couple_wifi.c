@@ -465,6 +465,17 @@ esp_err_t couple_wifi_init(void)
 
     load_creds();
 
+    // esp_wifi_init（NVS cfg、静态 RX buffer 等几十 KB 静态分配）必须尽早做：
+    // 此处空闲堆约 92KB 充足；若推迟到 NimBLE 之后由 autoconnect 触发，
+    // 仅剩约 6KB，实测报 "wifi nvs cfg alloc out of memory" (ESP_ERR_NO_MEM)。
+    // 射频启动（esp_wifi_start）仍由 wifi_start() 惰性触发，不在此处进行，
+    // 避免 Wi-Fi 运行时缓冲抢占 NimBLE MSYS 池所需的连续堆。
+    err = ensure_wifi_inited();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Wi-Fi 驱动初始化失败: %s", esp_err_to_name(err));
+        return err;
+    }
+
     s_req_queue = xQueueCreate(WIFI_REQ_QUEUE_DEPTH, sizeof(wifi_request_t));
     if (!s_req_queue) return ESP_ERR_NO_MEM;
 
