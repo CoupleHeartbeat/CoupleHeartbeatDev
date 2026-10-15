@@ -80,7 +80,9 @@ UI_STRINGS = [
     # 工牌页靠近时的一行距离/信号（光效分档本身不需要文字）
     "距离 %.0f cm  信号 %d", "距离 %.1f m  信号 %d",
     # settings menu (short press OK)
-    "设置", "关于设备", "恢复出厂设置", "↑↓选择  OK确认", "确认", "取消",
+    "设置", "关于设备", "立即休眠", "恢复出厂设置", "↑↓选择  OK确认", "确认", "取消",
+    # low-power deep sleep warning overlay
+    "即将休眠", "即将休眠\n按任意键取消",
     "名称:", "固件: v1.0.0", "短按OK设置", "长按OK对话", "↑↓音量",
     "长按OK返回", "OK返回",
     # AI dialog page (long press OK)

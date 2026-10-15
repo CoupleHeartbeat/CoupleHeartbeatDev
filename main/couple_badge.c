@@ -3,6 +3,7 @@
 #include "couple_auto.h"
 #include "couple_fonts.h"
 #include "couple_gatt.h"
+#include "couple_power.h"
 #include "couple_wifi.h"
 #include "bsp_display.h"
 #include "bsp_battery.h"
@@ -45,7 +46,7 @@ typedef enum {
 } ui_state_t;
 
 static ui_state_t s_ui = UI_IDLE;
-static int s_menu_sel;     // 0=关于设备 1=恢复出厂设置
+static int s_menu_sel;     // 0=关于设备 1=立即休眠 2=恢复出厂设置
 static int s_confirm_sel;  // 0=确认 1=取消（默认取消，防误触）
 static lv_obj_t *s_panel;
 static lv_obj_t *s_panel_title;
@@ -335,9 +336,11 @@ static void panel_render(void)
     switch (s_ui) {
     case UI_MENU:
         lv_label_set_text(s_panel_title, "设置");
-        lv_label_set_text_fmt(s_panel_items, "%s 关于设备\n%s 恢复出厂设置",
+        lv_label_set_text_fmt(s_panel_items,
+                              "%s 关于设备\n%s 立即休眠\n%s 恢复出厂设置",
                               s_menu_sel == 0 ? ">" : " ",
-                              s_menu_sel == 1 ? ">" : " ");
+                              s_menu_sel == 1 ? ">" : " ",
+                              s_menu_sel == 2 ? ">" : " ");
         lv_label_set_text(s_panel_hint, "↑↓选择  OK确认\n长按OK返回");
         break;
     case UI_ABOUT: {
@@ -643,7 +646,7 @@ void couple_badge_key(bsp_btn_t btn, bsp_btn_ev_t ev)
                 }
             }
         } else if (s_ui == UI_MENU) {
-            s_menu_sel = !s_menu_sel;
+            s_menu_sel = (s_menu_sel + 1) % 3;
             panel_render();
         } else if (s_ui == UI_CONFIRM) {
             s_confirm_sel = !s_confirm_sel;
@@ -664,6 +667,10 @@ void couple_badge_key(bsp_btn_t btn, bsp_btn_ev_t ev)
     case UI_MENU:
         if (s_menu_sel == 0) {
             panel_open(UI_ABOUT);
+        } else if (s_menu_sel == 1) {
+            // 立即休眠：先收起菜单，低功耗管理器随后显示"即将休眠"并进入深睡
+            panel_close();
+            couple_power_request_sleep_now();
         } else {
             s_confirm_sel = 1;  // 默认停在"取消"，防误触
             panel_open(UI_CONFIRM);

@@ -8,6 +8,8 @@
 #include "couple_app.h"
 #include "couple_ai.h"
 #include "couple_fonts.h"
+#include "couple_gatt.h"
+#include "couple_power.h"
 #include "couple_wifi.h"
 #include "bsp_i2c.h"
 #include "bsp_display.h"
@@ -52,6 +54,10 @@ static key_guard_t s_key_guard;
 // ============================================================================
 static void dispatch_key(bsp_btn_t btn, bsp_btn_ev_t ev)
 {
+    // 低功耗：息屏/深睡警告期内的按键先用于唤醒屏幕（或取消休眠），
+    // 不再下发给页面，避免黑屏中的误操作。
+    if (couple_power_notify_key()) return;
+
     if (!bsp_lvgl_lock(500)) return;
 
     switch (g_couple_state.mode) {
@@ -93,7 +99,7 @@ static esp_err_t input_dispatch_init(void)
 }
 
 // ============================================================================
-// 周期任务：补启心跳扫描 + 心跳超时检测
+// 周期任务：补启心跳扫描 + 心跳超时检测 + 低功耗策略评估
 // 靠近光效由工牌页自己的定时器刷新，这里不再触碰 LVGL。
 // ============================================================================
 static void couple_tick_task(void *arg)
@@ -101,6 +107,16 @@ static void couple_tick_task(void *arg)
     (void)arg;
     for (;;) {
         couple_ble_tick();
+
+        const couple_power_inputs_t power_in = {
+            .mode_ai = couple_mode_get() == COUPLE_MODE_AI,
+            .partner_present = g_couple_state.partner_connected,
+            .wifi_busy = couple_wifi_get_state() == COUPLE_WIFI_STATE_CONNECTING ||
+                         couple_wifi_is_scanning(),
+            .app_connected = couple_gatt_app_connected(),
+        };
+        couple_power_tick(&power_in);
+
         vTaskDelay(pdMS_TO_TICKS(COUPLE_TICK_PERIOD_MS));
     }
 }
@@ -230,6 +246,16 @@ void app_main(void)
         ESP_LOGE(TAG, "按键初始化失败: %s", esp_err_to_name(button_err));
     }
 
+    // 深睡按键唤醒重启时唤醒键可能仍按着：武装守卫吞掉残留动作，
+    // 并按物理电平同步一次（已松手立即撤防，采样失败保守保持武装）。
+    if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_GPIO) {
+        key_guard_arm(&s_key_guard, esp_timer_get_time(), 3 * 1000000);
+    }
+    int btn_mv = bsp_button_read_mv();
+    key_guard_sync_released(&s_key_guard,
+                            btn_mv < 0 ? false
+                                       : btn_mv >= BSP_BTN_MV_RELEASED_MIN);
+
     // 初始化电池（失败不阻塞）
     esp_err_t batt_err = bsp_battery_init();
     if (batt_err != ESP_OK) {
@@ -277,7 +303,8 @@ void app_main(void)
         s_input_ready = true;
     }
 
-    // 周期性任务：心跳超时检测 + 靠近自动切换模式
+    // 周期性任务：心跳超时检测 + 靠近自动切换模式 + 低功耗策略评估
+    couple_power_init();
     if (xTaskCreate(couple_tick_task, "couple_tick", 4096, NULL, 4,
                     &s_tick_task) != pdPASS) {
         ESP_LOGE(TAG, "周期任务创建失败，靠近自动切换不可用");

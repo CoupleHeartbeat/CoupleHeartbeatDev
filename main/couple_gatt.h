@@ -2,6 +2,7 @@
 #pragma once
 
 #include "esp_err.h"
+#include <stdbool.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -56,6 +57,11 @@ uint16_t couple_gatt_get_pair_code(void);
  * @brief 重新生成配对码（恢复出厂设置后调用）
  */
 void couple_gatt_new_pair_code(void);
+
+/**
+ * @brief App 是否正通过 GATT 连接（低功耗决策用：连接中抑制深睡）
+ */
+bool couple_gatt_app_connected(void);
 
 #ifdef __cplusplus
 }

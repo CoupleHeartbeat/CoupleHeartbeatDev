@@ -113,6 +113,11 @@ void couple_gatt_new_pair_code(void)
     generate_pair_code();
 }
 
+bool couple_gatt_app_connected(void)
+{
+    return s_connected;
+}
+
 // ============================================================================
 // 前向声明
 // ============================================================================
