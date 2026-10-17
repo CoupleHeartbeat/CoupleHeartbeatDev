@@ -303,6 +303,7 @@ static esp_err_t i2s_full_duplex_init(void) {
     i2s_chan_config_t chan = {
         .id = BSP_I2S_PORT,
         .role = I2S_ROLE_MASTER,
+        // DMA 描述符 6：TTS 移除后恢复，保证录音/提示音有足够缓冲。
         .dma_desc_num = 6,
         .dma_frame_num = 240,
         .auto_clear_after_cb = true,

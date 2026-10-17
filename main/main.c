@@ -143,17 +143,48 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
 }
 
 // ============================================================================
-// 设置默认时间（没有 RTC 电池时的初始值）
+// 系统时钟：把 UTC 秒与时区偏移写入系统（settimeofday + 重建 POSIX TZ）
 // ============================================================================
-static void set_default_time(void)
+void couple_app_apply_time(long long unix_sec, long tz_offset_sec)
 {
     struct timeval tv = {
-        .tv_sec = 1767225600,  // 2026-01-01 00:00:00 UTC
+        .tv_sec = (time_t)unix_sec,
         .tv_usec = 0,
     };
     settimeofday(&tv, NULL);
-    setenv("TZ", "CST-8", 1);
+
+    // POSIX TZ 的符号与"东为正"的时区偏移相反
+    char sign = (tz_offset_sec >= 0) ? '-' : '+';
+    long abs_off = (tz_offset_sec >= 0) ? tz_offset_sec : -tz_offset_sec;
+    long h = abs_off / 3600;
+    long m = (abs_off % 3600) / 60;
+    char tz_str[16];
+    if (m > 0) {
+        snprintf(tz_str, sizeof(tz_str), "CST%c%ld:%02ld", sign, h, m);
+    } else {
+        snprintf(tz_str, sizeof(tz_str), "CST%c%ld", sign, h);
+    }
+    setenv("TZ", tz_str, 1);
     tzset();
+}
+
+// ============================================================================
+// 开机时间：本板无 RTC 后备电池。优先恢复上次 App 对时的结果（NVS），
+// 这样断电重启后日期/时间不会跳回出厂默认值；拿到 Wi-Fi 后 App 会重新对时。
+// ============================================================================
+static void apply_initial_time(void)
+{
+    uint32_t unix_sec = 0;
+    int32_t tz_off = 0;
+    if (couple_storage_load_time(&unix_sec, &tz_off) == ESP_OK && unix_sec > 0) {
+        couple_app_apply_time((long long)unix_sec, (long)tz_off);
+        ESP_LOGI(TAG, "已恢复上次时间: unix=%u tz=%lds",
+                 (unsigned)unix_sec, (long)tz_off);
+        return;
+    }
+
+    couple_app_apply_time(1767225600LL, 8L * 3600L);  // 2026-01-01 00:00:00 UTC(CST)
+    ESP_LOGI(TAG, "未找到上次时间，使用默认时间");
 }
 
 // ============================================================================
@@ -192,8 +223,9 @@ void app_main(void)
 {
     ESP_LOGI(TAG, "FoloToy AI Passport 情侣互动应用启动");
 
-    // 设置默认时间
-    set_default_time();
+    // 设置出厂默认时间（此时 NVS 还没初始化，稍后由 apply_initial_time 用
+    // 上次 App 对时的结果覆盖）
+    couple_app_apply_time(1767225600LL, 8L * 3600L);
 
     // 先初始化 I2C（电量计、音频 codec 用）
     bsp_i2c_init();
@@ -220,6 +252,11 @@ void app_main(void)
     esp_err_t storage_err = couple_storage_init();
     if (storage_err != ESP_OK) {
         ESP_LOGE(TAG, "存储初始化失败: %s", esp_err_to_name(storage_err));
+    }
+
+    // 用 NVS 里上次 App 对时的结果覆盖默认时间：断电重启后日期不再跳回默认值
+    if (storage_err == ESP_OK) {
+        apply_initial_time();
     }
 
     // 挂载用户数据分区（FAT，刷机不清空）；失败不阻塞启动

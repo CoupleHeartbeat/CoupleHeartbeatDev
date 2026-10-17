@@ -70,6 +70,9 @@ void couple_badge_enter(void);
 void couple_badge_exit(void);
 void couple_badge_key(bsp_btn_t btn, bsp_btn_ev_t ev);
 void couple_badge_update_time(void);
+// 低功耗屏：只显示姓名(大字) + 时间 + 年月日，状态栏/提示/靠近光效全部隐藏。
+// 息屏（低功耗）时置 true，唤醒时置 false。必须在持有 LVGL 锁时调用。
+void couple_badge_set_minimal(bool minimal);
 
 // ============================================================================
 // BLE 心跳通信（couple_ble.c）
@@ -104,6 +107,18 @@ esp_err_t couple_storage_init(void);
 esp_err_t couple_storage_save_pair(const couple_pair_info_t *info);
 esp_err_t couple_storage_load_pair(couple_pair_info_t *info);
 esp_err_t couple_storage_clear_pair(void);
+
+// ============================================================================
+// 系统时钟（couple_storage.c + main.c）
+// ============================================================================
+// 系统时间持久化：本板无 RTC 后备电池，断电即丢时间。App 每次对时后写入 NVS，
+// 开机时先恢复上次已知时间，再由 App 重新对时校准。
+esp_err_t couple_storage_save_time(uint32_t unix_sec, int32_t tz_offset_sec);
+esp_err_t couple_storage_load_time(uint32_t *unix_sec, int32_t *tz_offset_sec);
+
+// 把 UTC 秒与时区偏移写入系统时钟（settimeofday + 重建 POSIX TZ）。
+// 实现见 main.c；GATT 时间同步与开机恢复时间共用。
+void couple_app_apply_time(long long unix_sec, long tz_offset_sec);
 
 // ============================================================================
 // GATT 配置服务（couple_gatt.c）

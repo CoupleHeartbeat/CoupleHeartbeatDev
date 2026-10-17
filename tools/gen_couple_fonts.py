@@ -89,6 +89,10 @@ UI_STRINGS = [
     "AI 对话", "待机", "聆听中%s %d", "松手发送", "思考中...", "播放中...",
     "连接失败", "按住OK说话\n单击OK返回", "按住OK重试\n单击OK返回",
     "请先在App配置Key", "请先在App配置Wi-Fi", "没听清，请再说一次",
+    # 松手后立即上传识别：转文字阶段与低功耗屏
+    "语音转文字中...", "正在准备...",
+    # 工牌页日期（含年份）与低功耗屏占位
+    "%d年%d月%d日 周%s", "--年--月--日",
 ]
 
 
@@ -112,6 +116,26 @@ def parse_previous_sparse() -> set[int]:
         )
 
 
+def gb2312_codepoints() -> set[int]:
+    """Return every hanzi reachable through GB2312 (6763 chars).
+
+    ASR text and model replies are dynamic, so the UI charset alone is not
+    enough. A full GB2312 set covers everyday spoken Chinese; the glyph
+    bitmaps stay in flash and are read on demand, so RAM usage is unchanged.
+    """
+    cps: set[int] = set()
+    # 0xA1-0xA3：全角标点、序号、全角字母数字（对话里的，。！？：；“”…—— 都在这里）
+    # 0xB0-0xF7：一级 + 二级汉字
+    for hi in list(range(0xA1, 0xA4)) + list(range(0xB0, 0xF8)):
+        for lo in range(0xA1, 0xFF):
+            try:
+                ch = bytes((hi, lo)).decode("gb2312")
+            except UnicodeDecodeError:
+                continue
+            cps.add(ord(ch))
+    return cps
+
+
 def collect_charset() -> tuple[list[int], list[int]]:
     """Return (ascii_codepoints, sparse_codepoints_sorted)."""
     ascii_cps = list(range(ASCII_START, ASCII_END + 1))
@@ -121,6 +145,7 @@ def collect_charset() -> tuple[list[int], list[int]]:
             cp = ord(ch)
             if cp > ASCII_END:
                 sparse.add(cp)
+    sparse |= gb2312_codepoints()
     return ascii_cps, sorted(sparse)
 
 

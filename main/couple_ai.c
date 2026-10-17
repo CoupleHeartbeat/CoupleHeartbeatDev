@@ -8,6 +8,7 @@
 #include "bsp_audio.h"
 #include "bsp_display.h"
 #include "esp_log.h"
+#include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
@@ -20,8 +21,10 @@ static const char *TAG = "couple_ai";
 
 // 识别采样率与单次录音上限。提前结束的录音用静音补齐到声明长度，
 // 这样请求体长度始终与 WAV 头一致（服务端按声明长度收流）。
-#define COUPLE_AI_SAMPLE_RATE 16000
-#define COUPLE_AI_RECORD_SECONDS 6
+// 8kHz 单声道 16bit：ASR 仍可识别，请求体只有 16kHz 的一半，
+// 上传与识别等待时间随之减半。
+#define COUPLE_AI_SAMPLE_RATE 8000
+#define COUPLE_AI_RECORD_SECONDS 4
 #define COUPLE_AI_TOTAL_PCM \
     (COUPLE_AI_SAMPLE_RATE * 2 * COUPLE_AI_RECORD_SECONDS)
 
@@ -37,6 +40,7 @@ static const char *TAG = "couple_ai";
 typedef enum {
     AI_STATE_IDLE = 0,     // 待机，等按键
     AI_STATE_LISTENING,    // 录音中
+    AI_STATE_TRANSCRIBING, // 松手后：上传录音、语音转文字中
     AI_STATE_THINKING,     // 识别 + 对话请求中
     AI_STATE_SPEAKING,     // 语音播报中
     AI_STATE_ERROR,        // 出错
@@ -158,6 +162,11 @@ static void ai_render_state(void)
         lv_label_set_text(s_hint_label, "松手发送");
         break;
     }
+    case AI_STATE_TRANSCRIBING:
+        lv_label_set_text(s_state_label, "语音转文字中...");
+        lv_obj_set_style_text_color(s_state_label, lv_color_hex(0x6bb5ff), 0);
+        lv_label_set_text(s_hint_label, "长按OK返回");
+        break;
     case AI_STATE_THINKING:
         lv_label_set_text(s_state_label, "思考中...");
         lv_obj_set_style_text_color(s_state_label, lv_color_hex(0x6bb5ff), 0);
@@ -223,24 +232,6 @@ static void ai_tick(lv_timer_t *timer)
 // ============================================================================
 // 语音管线（工作任务内执行）
 // ============================================================================
-static esp_err_t ai_pcm_out(const uint8_t *pcm, size_t bytes, uint32_t rate,
-                            uint8_t channels, uint8_t bits, void *ctx)
-{
-    bool *format_set = (bool *)ctx;
-
-    if (!*format_set && rate && channels && bits) {
-        if (bsp_audio_set_format(rate, bits, channels) != ESP_OK) {
-            ESP_LOGE(TAG, "设置播放格式失败");
-            return ESP_FAIL;
-        }
-        bsp_audio_set_volume(g_couple_state.volume);
-        *format_set = true;
-        ai_set_state(AI_STATE_SPEAKING);
-    }
-    if (bytes == 0) return ESP_OK;
-    return bsp_audio_write(pcm, bytes);
-}
-
 static esp_err_t ai_do_record_and_asr(void)
 {
     uint32_t total = COUPLE_AI_TOTAL_PCM;
@@ -276,6 +267,9 @@ static esp_err_t ai_do_record_and_asr(void)
             (int)((total - fed) / (COUPLE_AI_SAMPLE_RATE * 2));
     }
 
+    // 松手即上传识别：先给用户"语音转文字中..."的反馈，再补齐长度等识别结果
+    ai_set_state(AI_STATE_TRANSCRIBING);
+
     // 提前结束时补静音，保证请求体长度与 WAV 头声明一致
     if (fed < total) {
         memset(buf, 0, sizeof(buf));
@@ -288,13 +282,14 @@ static esp_err_t ai_do_record_and_asr(void)
         s_listen_seconds_left = 0;
     }
 
-    ai_set_state(AI_STATE_THINKING);
     char text[AI_USER_TEXT_MAX];
     err = couple_mimo_asr_end(text, sizeof(text));
     if (err == ESP_OK && text[0] != '\0') {
         snprintf(s_user_text, sizeof(s_user_text), "%s", text);
-        ai_publish();
     }
+    // 识别已结束（成功或失败），进入对话请求阶段
+    ai_set_state(AI_STATE_THINKING);
+    ai_publish();
     return err;
 }
 
@@ -339,14 +334,7 @@ static void ai_run_turn(void)
     snprintf(s_reply_text, sizeof(s_reply_text), "%s", reply);
     ai_publish();
 
-    bool format_set = false;
-    err = couple_mimo_tts_stream(s_api_key, reply, ai_pcm_out, &format_set);
-    if (couple_mimo_is_cancelled()) return;
-    if (err != ESP_OK) {
-        // 文本已经拿到并显示了，播报失败不算整轮失败
-        ESP_LOGW(TAG, "语音播报失败: %s", esp_err_to_name(err));
-    }
-
+    // 不做语音合成：只保留文字回复，省掉一次 TLS 连接与音频播放。
     ai_set_state(AI_STATE_IDLE);
 }
 
@@ -357,7 +345,11 @@ static void ai_worker(void *arg)
     for (;;) {
         if (xQueueReceive(s_cmd_queue, &cmd, portMAX_DELAY) != pdTRUE) continue;
         if (cmd == AI_CMD_START) {
+            // 对话期间关闭 Wi-Fi 省电：modem sleep 会让上行 ACK 明显变慢，
+            // 而一轮对话只有几秒，功耗代价可以接受。结束后恢复省电。
+            esp_wifi_set_ps(WIFI_PS_NONE);
             ai_run_turn();
+            esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
         } else if (cmd == AI_CMD_STOP) {
             s_stop_requested = true;
         }
@@ -482,6 +474,7 @@ void couple_ai_key(bsp_btn_t btn, bsp_btn_ev_t ev)
             (void)ai_post(AI_CMD_START);
             break;
         case AI_STATE_THINKING:
+        case AI_STATE_TRANSCRIBING:
         case AI_STATE_SPEAKING:
             // 长按返回工牌页；模式切换会调用 couple_ai_exit 释放本页
             couple_mode_switch(COUPLE_MODE_BADGE);
@@ -524,11 +517,13 @@ esp_err_t couple_ai_init(void)
     s_cmd_queue = xQueueCreate(4, sizeof(ai_cmd_t));
     if (!s_cmd_queue) return ESP_ERR_NO_MEM;
 
-    // HTTP + JSON 拼装 + 1.5KB 文本缓冲都在这条任务上，栈要给足
-    if (xTaskCreate(ai_worker, "couple_ai", 8192, NULL, 4, &s_worker) != pdPASS) {
+    // HTTP + JSON 拼装 + mbedTLS 握手都在这一条任务上；8KB 实测在
+    // TTS 起播阶段栈溢出（Stack protection fault），提到 12KB。
+    if (xTaskCreate(ai_worker, "couple_ai", 12288, NULL, 4, &s_worker) != pdPASS) {
         vQueueDelete(s_cmd_queue);
         s_cmd_queue = NULL;
         return ESP_ERR_NO_MEM;
     }
+
     return ESP_OK;
 }

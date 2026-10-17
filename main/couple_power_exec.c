@@ -168,15 +168,25 @@ void couple_power_tick(const couple_power_inputs_t *in)
 
     switch (act) {
     case COUPLE_POWER_ACT_SCREEN_OFF:
-        bsp_display_backlight(0);
+        // 低功耗屏：不再全黑，改为调暗背光 + 只显示姓名(大字)/时间/年月日
+        bsp_display_backlight(COUPLE_POWER_DIM_PERCENT);
+        if (bsp_lvgl_lock(500)) {
+            couple_badge_set_minimal(true);
+            bsp_lvgl_unlock();
+        }
         s_state = COUPLE_POWER_STATE_SCREEN_OFF;
-        ESP_LOGI(TAG, "无操作息屏，心跳检测继续");
+        ESP_LOGI(TAG, "无操作息屏，进入低功耗屏（背光 %d%%），心跳检测继续",
+                 COUPLE_POWER_DIM_PERCENT);
         break;
     case COUPLE_POWER_ACT_SCREEN_ON:
         s_state = COUPLE_POWER_STATE_ACTIVE;
         s_manual = false;
         s_last_activity_ms = now;
         warn_overlay_close();
+        if (bsp_lvgl_lock(500)) {
+            couple_badge_set_minimal(false);
+            bsp_lvgl_unlock();
+        }
         bsp_display_backlight(100);
         ESP_LOGI(TAG, "唤醒屏幕");
         break;
@@ -204,6 +214,10 @@ bool couple_power_notify_key(void)
 
     if (s_state == COUPLE_POWER_STATE_SCREEN_OFF) {
         s_state = COUPLE_POWER_STATE_ACTIVE;
+        if (bsp_lvgl_lock(500)) {
+            couple_badge_set_minimal(false);
+            bsp_lvgl_unlock();
+        }
         bsp_display_backlight(100);
         ESP_LOGI(TAG, "按键唤醒屏幕");
         return true;

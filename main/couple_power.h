@@ -20,6 +20,9 @@
 #define COUPLE_POWER_DEEP_AFTER_MS   (15u * 60u * 1000u) // 无操作深睡（含息屏期）
 #define COUPLE_POWER_WARN_MS         10000u              // 自动深睡警告时长
 #define COUPLE_POWER_WARN_MANUAL_MS  2000u               // 手动休眠警告时长
+// 低功耗屏背光百分比：息屏后不再全黑，调暗到该亮度只显示姓名/时间/年月日。
+// 深睡仍在 15 分钟无操作后执行，因此这点背光功耗可接受。
+#define COUPLE_POWER_DIM_PERCENT     10
 
 typedef enum {
     COUPLE_POWER_STATE_ACTIVE = 0,  // 正常使用，背光亮

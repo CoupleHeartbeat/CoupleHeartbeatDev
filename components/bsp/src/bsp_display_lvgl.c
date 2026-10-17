@@ -9,9 +9,12 @@
 
 static const char *TAG = "bsp_lvgl";
 
-// 第五轮内存修复：单缓冲从 40 行(19.2KB)降到 24 行(11.5KB)，把 7.7KB 归还系统堆，
-// 供 AI 语音的 TLS 握手使用。代价是整屏刷新窗口数由 8 次增到 14 次，SPI 仍充裕。
-#define BSP_LVGL_DRAW_BUFFER_LINES 24
+// 第五轮内存修复：单缓冲 40 行(19.2KB)→24→16→8 行(3.8KB)，逐级把 RAM 归还系统堆。
+// 依据：AI 语音的 TLS 握手（mbedtls_ssl_setup + RSA 验签）会把 23KB 堆几乎吃干，
+// 最后一次大数分配失败（RSA_PUBLIC_FAILED + MPI_ALLOC_FAILED）。代价是整屏刷新
+// 窗口增多，SPI 仍充裕。
+// TTS 已移除，绘制缓冲恢复 8 行(3.8KB)，减少窗口刷新次数、避免界面卡顿。
+#define BSP_LVGL_DRAW_BUFFER_LINES 8
 
 static lv_display_t *s_disp;
 static bool s_port_initialized;

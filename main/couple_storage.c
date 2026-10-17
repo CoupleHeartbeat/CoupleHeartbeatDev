@@ -121,3 +121,50 @@ esp_err_t couple_storage_clear_pair(void)
     ESP_LOGI(TAG, "配对信息已清除");
     return err;
 }
+
+// ============================================================================
+// 系统时间持久化
+//
+// 本板无 RTC 后备电池，断电即丢时间，所以把 App 对时结果落到 NVS：
+// 开机先恢复到"上次已知时间"（至少日期不再跳回默认值），再由 App 重新对时校准。
+// 与配对信息分开命名空间，避免"恢复出厂设置"把时间一起擦掉。
+// ============================================================================
+#define TIME_NAMESPACE "couple_time"
+
+esp_err_t couple_storage_save_time(uint32_t unix_sec, int32_t tz_offset_sec)
+{
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(TIME_NAMESPACE, NVS_READWRITE, &handle);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "时间 NVS 打开失败: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    err = nvs_set_u32(handle, "unix", unix_sec);
+    if (err == ESP_OK) {
+        err = nvs_set_i32(handle, "tz", tz_offset_sec);
+    }
+    if (err == ESP_OK) {
+        err = nvs_commit(handle);
+    }
+    nvs_close(handle);
+    return err;
+}
+
+esp_err_t couple_storage_load_time(uint32_t *unix_sec, int32_t *tz_offset_sec)
+{
+    if (!unix_sec || !tz_offset_sec) return ESP_ERR_INVALID_ARG;
+
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(TIME_NAMESPACE, NVS_READONLY, &handle);
+    if (err != ESP_OK) return err;
+
+    err = nvs_get_u32(handle, "unix", unix_sec);
+    if (err == ESP_OK) {
+        if (nvs_get_i32(handle, "tz", tz_offset_sec) != ESP_OK) {
+            *tz_offset_sec = 8 * 3600;  // 缺省东八区
+        }
+    }
+    nvs_close(handle);
+    return err;
+}

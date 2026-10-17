@@ -62,11 +62,11 @@ CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=512
 # 会把剩余最大连续块切碎；此时 hci init 中 MSYS_2(24×320≈7.5KB) 与
 # ACL 池(24×~300B≈7KB) 的单笔连续分配失败，日志表现为 "hci inits failed"。
 # 本应用仅 1 个连接、GATT 小数据（凭据下发/状态同步），故持续下调：
-# 12/12/20 → 8/8/12，单连接 + MTU 512 的短报文场景完全够用，
-# 再省约 4.5KB 堆作为 AI 语音 TLS 握手的余量。
-CONFIG_BT_NIMBLE_MSYS_2_BLOCK_COUNT=8
-CONFIG_BT_NIMBLE_TRANSPORT_ACL_FROM_LL_COUNT=8
-CONFIG_BT_NIMBLE_TRANSPORT_EVT_COUNT=12
+# 12/12/20 → 8/8/12 → 6/6/8。单连接 + MTU 512 的短报文完全够用，
+# 腾出的堆直接用于 AI 语音 TLS 握手（mbedtls_ssl_setup 的分配曾失败）。
+CONFIG_BT_NIMBLE_MSYS_2_BLOCK_COUNT=6
+CONFIG_BT_NIMBLE_TRANSPORT_ACL_FROM_LL_COUNT=6
+CONFIG_BT_NIMBLE_TRANSPORT_EVT_COUNT=8
 
 # --- mbedTLS（AES 加密需要）---
 CONFIG_MBEDTLS_CIPHER_C=y
@@ -86,13 +86,27 @@ CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
 # TLS 记录长度默认 16KB；AI 对话的响应是按块读取的，缩到 4KB 可省下约 12KB 堆。
 # 注意：4KB 是 mbedtls 单条记录上限，不影响总响应长度。
 CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=4096
-CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=2048
+CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=1024
+# TLS 记录缓冲按需分配：握手/收发结束后释放 in/out 缓冲，给 Wi-Fi 发送腾出
+# 连续块（本板 TLS 连接建立后只剩 8KB，Wi-Fi 分配 1.6KB TX 缓冲都会失败）。
+CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
+# 握手完成后不再保留对端证书，省 1~2KB
+CONFIG_MBEDTLS_SSL_KEEP_PEER_CERTIFICATE=n
 # Wi-Fi 缓冲裁剪：默认值(静态RX 10 + 动态RX/TX 32×2 + AMPDU 聚合)在 NimBLE+LVGL+音频
 # 全部就绪后已把空闲堆压到约 15KB，esp_wifi_init 分配 10 个静态 RX buffer 直接失败
 # (esf_buf_setup_static: alloc eb fail)，连带 AI 对话初始化 NO_MEM。
 # 本应用 Wi-Fi 仅用于 AI 的 HTTPS 小包请求，减半缓冲并关闭 AMPDU 聚合无吞吐损失。
-CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=6
-CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=16
-CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=16
+# 第五轮再降到 3：3×1600=4.8KB，TLS 握手期间 RX 突发仍能覆盖；
+# 再腾 1.6KB 给 TLS 握手（该握手会把空闲堆几乎吃干）。
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=3
+# 动态 RX 池从 16 降到 4：每块约 1.6KB。TLS 握手后最大连续块只剩 4~5KB，
+# 而 Wi-Fi 收发需要的块更大，日志里已出现 `wifi:m f null` / `wifi:mem fail`
+# （分配失败导致上行停滞）。
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=4
+# TX 池 4：保留足够的一次上行突发；TTS 已移除，不再需要为 16KB TLS 记录让路。
+CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=4
 CONFIG_ESP_WIFI_AMPDU_TX_ENABLED=n
 CONFIG_ESP_WIFI_AMPDU_RX_ENABLED=n
+# TCP 窗口：TTS 已移除，恢复默认值以提升 ASR 上传吞吐。
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=5760
+CONFIG_LWIP_TCP_WND_DEFAULT=5760

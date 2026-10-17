@@ -28,6 +28,7 @@ static lv_obj_t *s_wifi_icon;       // 右上角 Wi-Fi 图标容器
 static lv_obj_t *s_wifi_arc1;       // 外圈
 static lv_obj_t *s_wifi_arc2;       // 内圈
 static lv_obj_t *s_wifi_dot;        // 扇形焦点
+static lv_obj_t *s_divider;         // 时间/姓名之间的分隔线（低功耗屏需隐藏）
 static lv_timer_t *s_timer;
 static lv_timer_t *s_prox_timer;
 static lv_anim_t s_glow_anim;
@@ -426,12 +427,12 @@ static void tick(lv_timer_t *timer)
         lv_label_set_text(s_time_label, buf);
     }
 
-    // 更新日期
+    // 更新日期（含年份）
     if (s_date_label) {
-        char buf[32];
+        char buf[40];
         const char *weekdays[] = {"日", "一", "二", "三", "四", "五", "六"};
-        snprintf(buf, sizeof(buf), "%d月%d日 周%s",
-                 timeinfo.tm_mon + 1, timeinfo.tm_mday,
+        snprintf(buf, sizeof(buf), "%d年%d月%d日 周%s",
+                 timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
                  weekdays[timeinfo.tm_wday]);
         lv_label_set_text(s_date_label, buf);
     }
@@ -507,15 +508,15 @@ void couple_badge_enter(void)
     lv_obj_set_style_text_font(s_date_label, font_normal, 0);
     lv_obj_set_style_text_color(s_date_label, lv_color_hex(0xa0a0a0), 0);
     lv_obj_align(s_date_label, LV_ALIGN_TOP_MID, 0, 110);
-    lv_label_set_text(s_date_label, "--月--日");
+    lv_label_set_text(s_date_label, "--年--月--日");
 
     // 分隔线
-    lv_obj_t *line = lv_obj_create(s_scr);
-    lv_obj_set_size(line, 160, 1);
-    lv_obj_set_style_bg_color(line, lv_color_hex(0x3a3a5e), 0);
-    lv_obj_set_style_bg_opa(line, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(line, 0, 0);
-    lv_obj_align(line, LV_ALIGN_TOP_MID, 0, 145);
+    s_divider = lv_obj_create(s_scr);
+    lv_obj_set_size(s_divider, 160, 1);
+    lv_obj_set_style_bg_color(s_divider, lv_color_hex(0x3a3a5e), 0);
+    lv_obj_set_style_bg_opa(s_divider, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(s_divider, 0, 0);
+    lv_obj_align(s_divider, LV_ALIGN_TOP_MID, 0, 145);
 
     // 姓名/工牌名称
     s_name_label = lv_label_create(s_scr);
@@ -605,6 +606,7 @@ void couple_badge_exit(void)
         s_wifi_arc1 = NULL;
         s_wifi_arc2 = NULL;
         s_wifi_dot = NULL;
+        s_divider = NULL;
     }
     s_ui = UI_IDLE;
 }
@@ -697,4 +699,48 @@ void couple_badge_update_time(void)
     if (s_timer) {
         tick(s_timer);
     }
+}
+
+// ============================================================================
+// 低功耗屏：只显示姓名(大字) + 时间 + 年月日
+//
+// 无操作 60s 息屏后不再全黑，而是调暗背光并切到这块极简屏；15 分钟无操作仍
+// 会进入深睡，因此这点背光功耗可以接受。唤醒时恢复完整工牌页。
+// 必须在持有 LVGL 锁时调用。
+// ============================================================================
+void couple_badge_set_minimal(bool minimal)
+{
+    if (!s_scr) return;
+
+    lv_font_t *font_normal = couple_font_get(COUPLE_FONT_NORMAL);
+    lv_font_t *font_large = couple_font_get(COUPLE_FONT_LARGE);
+
+    if (s_name_label) {
+        lv_obj_set_style_text_font(s_name_label,
+                                   minimal ? font_large : font_normal, 0);
+        lv_obj_align(s_name_label, LV_ALIGN_TOP_MID, 0, minimal ? 86 : 165);
+    }
+    if (s_time_label) {
+        lv_obj_align(s_time_label, LV_ALIGN_TOP_MID, 0, minimal ? 140 : 70);
+    }
+    if (s_date_label) {
+        lv_obj_align(s_date_label, LV_ALIGN_TOP_MID, 0, minimal ? 182 : 110);
+    }
+
+    lv_obj_t *others[] = {
+        s_battery_label, s_status_label, s_wifi_icon, s_divider,
+        s_hint_label, s_prox_label, s_glow_frame,
+    };
+    for (size_t i = 0; i < sizeof(others) / sizeof(others[0]); i++) {
+        if (!others[i]) continue;
+        if (minimal) {
+            lv_obj_add_flag(others[i], LV_OBJ_FLAG_HIDDEN);
+        } else {
+            // 靠近提示/边框光效的显隐由 proximity_tick 每 500ms 重新决定，
+            // 这里只需解除隐藏标志
+            lv_obj_clear_flag(others[i], LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+
+    ESP_LOGI(TAG, "低功耗屏 %s", minimal ? "开启" : "关闭");
 }

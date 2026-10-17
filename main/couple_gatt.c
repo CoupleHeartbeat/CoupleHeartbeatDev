@@ -712,24 +712,12 @@ static int chr_access(uint16_t conn_handle, uint16_t attr_handle,
                 return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
             }
 
-            // 1) 设置系统时间（UTC 秒）
-            struct timeval tv = { .tv_sec = (time_t)unix_sec, .tv_usec = 0 };
-            settimeofday(&tv, NULL);
+            // 1) 写入系统时钟（settimeofday + 按 tz_offset 重建 POSIX TZ）
+            couple_app_apply_time(unix_sec, (long)tz_off);
 
-            // 2) 按 tz_offset 重建 POSIX TZ（POSIX 偏移符号与东为正相反）
-            long off = (long)tz_off;
-            char tz_str[16];
-            char sign = (off >= 0) ? '-' : '+';
-            long abs_off = (off >= 0) ? off : -off;
-            long h = abs_off / 3600;
-            long m = (abs_off % 3600) / 60;
-            if (m > 0) {
-                snprintf(tz_str, sizeof(tz_str), "CST%c%ld:%02ld", sign, h, m);
-            } else {
-                snprintf(tz_str, sizeof(tz_str), "CST%c%ld", sign, h);
-            }
-            setenv("TZ", tz_str, 1);
-            tzset();
+            // 2) 落盘：本板无 RTC 后备电池，断电后靠它恢复上次已知时间，
+            //    避免日期跳回出厂默认值
+            couple_storage_save_time((uint32_t)unix_sec, (int32_t)tz_off);
 
             // 3) 刷新工牌页时间显示（GATT 回调在 NimBLE host 任务，需加锁）
             if (bsp_lvgl_lock(500)) {

@@ -14,11 +14,16 @@
 
 #include "couple_ai_json.h"
 #include "esp_crt_bundle.h"
+#include "esp_heap_caps.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
+#include "esp_system.h"
+#include "esp_timer.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
 static const char *TAG = "couple_mimo";
 
@@ -247,6 +252,8 @@ static esp_http_client_handle_t http_new(const char *api_key)
         .crt_bundle_attach = esp_crt_bundle_attach,
         .buffer_size = HTTP_RX_BUF,
         .buffer_size_tx = HTTP_TX_BUF,
+        // keep-alive 关闭：连接池会常驻一整条 TLS 上下文（约 20KB），
+        // 本板握手后只剩不到 10KB 堆，池化会让下一次请求直接 NO_MEM。
         .keep_alive_enable = false,
         .disable_auto_redirect = true,
     };
@@ -258,14 +265,20 @@ static esp_http_client_handle_t http_new(const char *api_key)
     return client;
 }
 
-// 分块写出请求体，遇到取消立即返回
+// 分块写出请求体，遇到取消立即返回。
+// 单笔 1024 字节：正好一条 TLS 记录（OUT_CONTENT_LEN=1024），既不会超过
+// 一个 TCP 段，也能把 write 调用次数比 512 字节方案减半。
+#define MIMO_TX_CHUNK 1024
+
 static esp_err_t http_write_all(esp_http_client_handle_t client,
                                 const char *data, size_t len)
 {
     size_t sent = 0;
     while (sent < len) {
         if (s_cancel) return ESP_ERR_INVALID_STATE;
-        int n = esp_http_client_write(client, data + sent, (int)(len - sent));
+        size_t chunk = len - sent;
+        if (chunk > MIMO_TX_CHUNK) chunk = MIMO_TX_CHUNK;
+        int n = esp_http_client_write(client, data + sent, (int)chunk);
         if (n <= 0) return ESP_FAIL;
         sent += (size_t)n;
     }
@@ -320,7 +333,7 @@ esp_err_t couple_mimo_chat(const char *api_key, const char *user_text,
         "{\"model\":\"%s\",\"messages\":["
         "{\"role\":\"system\",\"content\":\"%s\"},"
         "{\"role\":\"user\",\"content\":\"%s\"}],"
-        "\"max_completion_tokens\":256,\"stream\":false,"
+        "\"max_completion_tokens\":128,\"stream\":false,"
         "\"thinking\":{\"type\":\"disabled\"}}",
         MIMO_CHAT_MODEL, MIMO_CHAT_SYSTEM, esc_user);
     if (body_len <= 0 || (size_t)body_len >= need) {
@@ -328,6 +341,7 @@ esp_err_t couple_mimo_chat(const char *api_key, const char *user_text,
         return ESP_ERR_INVALID_SIZE;
     }
 
+    int64_t t0 = esp_timer_get_time();
     esp_http_client_handle_t client = http_new(api_key);
     if (!client) {
         free(body);
@@ -371,7 +385,10 @@ esp_err_t couple_mimo_chat(const char *api_key, const char *user_text,
     free(resp);
     esp_http_client_close(client);
     esp_http_client_cleanup(client);
-    if (err == ESP_OK) ESP_LOGI(TAG, "对话回复已取回");
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "对话回复已取回 用时 %lld ms",
+                 (long long)((esp_timer_get_time() - t0) / 1000));
+    }
     return err;
 }
 
@@ -385,8 +402,11 @@ esp_err_t couple_mimo_tts_stream(const char *api_key, const char *text,
         return ESP_ERR_INVALID_ARG;
     }
 
-    char esc_text[1536];
-    char esc_style[512];
+    // 这些缓冲放在静态区而不是栈上：TTS 与 mbedTLS 握手共用 AI 任务栈，
+    // 实测 8KB 栈会在起播阶段溢出（Stack protection fault）。TTS 只由
+    // AI 任务串行调用，静态缓冲不会重入。
+    static char esc_text[768];
+    static char esc_style[256];
     if (json_escape(text, esc_text, sizeof(esc_text)) < 0 ||
         json_escape(MIMO_TTS_STYLE, esc_style, sizeof(esc_style)) < 0) {
         return ESP_ERR_INVALID_SIZE;
@@ -406,6 +426,11 @@ esp_err_t couple_mimo_tts_stream(const char *api_key, const char *text,
         return ESP_ERR_INVALID_SIZE;
     }
 
+    int64_t t0 = esp_timer_get_time();
+    int64_t t_first = 0;
+    ESP_LOGI(TAG, "TTS 开始 空闲堆=%u 最大块=%u",
+             (unsigned)esp_get_free_heap_size(),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
     esp_http_client_handle_t client = http_new(api_key);
     if (!client) {
         free(body);
@@ -431,8 +456,18 @@ esp_err_t couple_mimo_tts_stream(const char *api_key, const char *text,
 
     b64_dec_t dec = {0};
     wav_ctx_t wav = {0};
-    uint8_t pcm[2048];
-    char rx[HTTP_RX_BUF];
+    static uint8_t pcm[2048];
+    static char rx[HTTP_RX_BUF];
+
+// 首次交付 PCM 时记录起播延迟（含 TLS 建连、请求上传与首包等待）
+#define TTS_MARK_FIRST()                                                        \
+    do {                                                                        \
+        if (t_first == 0) {                                                     \
+            t_first = esp_timer_get_time();                                     \
+            ESP_LOGI(TAG, "TTS 首包延迟 %lld ms",                               \
+                     (long long)((t_first - t0) / 1000));                       \
+        }                                                                       \
+    } while (0)
 
     while (err == ESP_OK) {
         if (s_cancel) {
@@ -490,6 +525,7 @@ esp_err_t couple_mimo_tts_stream(const char *api_key, const char *text,
                             wav.parsed = true;
                             size_t rest = wav.need - wav.pcm_off;
                             if (rest > 0) {
+                                TTS_MARK_FIRST();
                                 err = cb(wav.buf + wav.pcm_off, rest, wav.rate,
                                          wav.channels, wav.bits, ctx);
                             }
@@ -504,6 +540,7 @@ esp_err_t couple_mimo_tts_stream(const char *api_key, const char *text,
                     continue;
                 }
 
+                TTS_MARK_FIRST();
                 err = cb(pcm, got, wav.rate, wav.channels, wav.bits, ctx);
                 continue;
             }
@@ -519,6 +556,11 @@ esp_err_t couple_mimo_tts_stream(const char *api_key, const char *text,
         ESP_LOGW(TAG, "响应里没有可播放的音频");
         err = ESP_ERR_INVALID_RESPONSE;
     }
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "TTS 结束 用时 %lld ms",
+                 (long long)((esp_timer_get_time() - t0) / 1000));
+    }
+#undef TTS_MARK_FIRST
     return err;
 }
 
@@ -531,6 +573,7 @@ static char s_asr_suffix[64];
 static size_t s_asr_suffix_len;
 static size_t s_asr_expect_pcm;
 static size_t s_asr_fed_pcm;
+static int64_t s_asr_t0;
 
 esp_err_t couple_mimo_asr_begin(const char *api_key, uint32_t sample_rate,
                                 uint8_t channels, uint32_t total_pcm_bytes)
@@ -578,7 +621,9 @@ esp_err_t couple_mimo_asr_begin(const char *api_key, uint32_t sample_rate,
     s_asr_fed_pcm = 0;
 
     esp_http_client_handle_t client = http_new(api_key);
-    if (!client) return ESP_ERR_NO_MEM;
+    if (!client) {
+        return ESP_ERR_NO_MEM;
+    }
 
     esp_err_t err = esp_http_client_open(client, (int)total);
     if (err == ESP_OK) {
@@ -597,6 +642,7 @@ esp_err_t couple_mimo_asr_begin(const char *api_key, uint32_t sample_rate,
     }
 
     s_asr_client = client;
+    s_asr_t0 = esp_timer_get_time();
     ESP_LOGI(TAG, "开始上传语音(%u 字节 PCM)", (unsigned)total_pcm_bytes);
     return ESP_OK;
 }
@@ -668,6 +714,7 @@ esp_err_t couple_mimo_asr_end(char *out_text, size_t out_size)
     s_asr_fed_pcm = 0;
     s_asr_expect_pcm = 0;
 
-    if (err == ESP_OK) ESP_LOGI(TAG, "语音识别完成");
+    ESP_LOGI(TAG, "语音识别%s 用时 %lld ms", err == ESP_OK ? "完成" : "失败",
+             (long long)((esp_timer_get_time() - s_asr_t0) / 1000));
     return err;
 }
