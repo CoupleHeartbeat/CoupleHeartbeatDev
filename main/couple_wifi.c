@@ -70,6 +70,24 @@ static int s_rssi;
 // ============================================================================
 // 内部工具
 // ============================================================================
+// 复制到定长 char 缓冲并保证 '\0' 结尾（-O2 下 strncpy 会触发
+// -Wstringop-truncation，且截断时可能没有终止符）。
+static void copy_cstr(char *dst, size_t dst_size, const char *src)
+{
+    size_t n = strlen(src);
+    if (n >= dst_size) n = dst_size - 1;
+    memcpy(dst, src, n);
+    dst[n] = '\0';
+}
+
+// 复制到 Wi-Fi 的定长字节数组（SSID 32 / 密码 64，不要求 '\0' 结尾）。
+static void copy_fixed(uint8_t *dst, size_t dst_size, const char *src)
+{
+    size_t n = strlen(src);
+    if (n > dst_size) n = dst_size;
+    memcpy(dst, src, n);
+}
+
 static void set_state(couple_wifi_state_t st)
 {
     if (s_state == st) return;
@@ -331,8 +349,8 @@ static esp_err_t wifi_start(void)
 static esp_err_t set_sta_config(void)
 {
     wifi_config_t wc = {0};
-    strncpy((char *)wc.sta.ssid, s_ssid, sizeof(wc.sta.ssid) - 1);
-    strncpy((char *)wc.sta.password, s_pass, sizeof(wc.sta.password) - 1);
+    copy_fixed(wc.sta.ssid, sizeof(wc.sta.ssid), s_ssid);
+    copy_fixed(wc.sta.password, sizeof(wc.sta.password), s_pass);
     wc.sta.threshold.authmode = WIFI_AUTH_OPEN;  // 开放网络也允许
     wc.sta.pmf_cfg.capable = true;
 
@@ -354,11 +372,9 @@ static esp_err_t connect_with(const char *ssid, const char *password)
         return err;
     }
 
-    strncpy(s_ssid, ssid, sizeof(s_ssid) - 1);
-    s_ssid[sizeof(s_ssid) - 1] = '\0';
+    copy_cstr(s_ssid, sizeof(s_ssid), ssid);
     if (password) {
-        strncpy(s_pass, password, sizeof(s_pass) - 1);
-        s_pass[sizeof(s_pass) - 1] = '\0';
+        copy_cstr(s_pass, sizeof(s_pass), password);
     } else {
         s_pass[0] = '\0';
     }
@@ -493,8 +509,8 @@ esp_err_t couple_wifi_autoconnect(void)
     if (!s_req_queue) return ESP_ERR_INVALID_STATE;
 
     wifi_request_t req = {0};
-    strncpy(req.ssid, s_ssid, sizeof(req.ssid) - 1);
-    strncpy(req.password, s_pass, sizeof(req.password) - 1);
+    copy_cstr(req.ssid, sizeof(req.ssid), s_ssid);
+    copy_cstr(req.password, sizeof(req.password), s_pass);
     if (xQueueSend(s_req_queue, &req, 0) != pdTRUE) return ESP_ERR_TIMEOUT;
 
     ESP_LOGI(TAG, "使用已保存凭据连接 Wi-Fi");
@@ -509,9 +525,9 @@ esp_err_t couple_wifi_request_credentials(const char *ssid, const char *password
     if (!s_req_queue) return ESP_ERR_INVALID_STATE;
 
     wifi_request_t req = {0};
-    strncpy(req.ssid, ssid, sizeof(req.ssid) - 1);
+    copy_cstr(req.ssid, sizeof(req.ssid), ssid);
     if (password) {
-        strncpy(req.password, password, sizeof(req.password) - 1);
+        copy_cstr(req.password, sizeof(req.password), password);
     }
     if (xQueueSend(s_req_queue, &req, 0) != pdTRUE) return ESP_ERR_TIMEOUT;
 
