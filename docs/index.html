@@ -1,0 +1,1030 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CoupleHeartbeat · 一对会互相感应的 AI 挂饰</title>
+<meta name="description" content="CoupleHeartbeat：一对通过 BLE 互相感应的 AI 情侣挂饰。ESP32-C3 固件与 Flutter App 全部开源，AI 辅助开发，欢迎 PR。">
+<meta property="og:title" content="CoupleHeartbeat · 一对会互相感应的 AI 挂饰">
+<meta property="og:description" content="ESP32-C3 固件 + Flutter App，全部开源。">
+<meta property="og:type" content="website">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%230d0c0a'/%3E%3Ccircle cx='12' cy='16' r='4' fill='%23ff5c3d'/%3E%3Ccircle cx='21' cy='16' r='2.2' fill='%23f2b544'/%3E%3C/svg%3E">
+<style>
+  :root {
+    --ink: #0d0c0a;
+    --ink-2: #15130f;
+    --paper: #f4efe6;
+    --muted: #9b9488;
+    --line: rgba(244, 239, 230, .13);
+    --coral: #ff5c3d;
+    --amber: #f2b544;
+    --display: "Songti SC", "Noto Serif SC", "Source Han Serif SC", ui-serif, Georgia, serif;
+    --sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    --mono: "SF Mono", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    --ease: cubic-bezier(.22, .61, .36, 1);
+  }
+
+  * { box-sizing: border-box; }
+
+  html { scroll-behavior: smooth; }
+
+  body {
+    margin: 0;
+    background: var(--ink);
+    color: var(--paper);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.7;
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+  }
+
+  /* 背景：暖色光斑 + 极淡网格，避免纯黑平面感 */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 0;
+    background:
+      radial-gradient(760px 520px at 82% 8%, rgba(255, 92, 61, .17), transparent 62%),
+      radial-gradient(620px 480px at 8% 42%, rgba(242, 181, 68, .10), transparent 64%),
+      radial-gradient(900px 700px at 50% 112%, rgba(255, 92, 61, .08), transparent 70%);
+  }
+
+  body::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 0;
+    opacity: .5;
+    background-image:
+      linear-gradient(to right, rgba(244, 239, 230, .028) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(244, 239, 230, .028) 1px, transparent 1px);
+    background-size: 72px 72px;
+    mask-image: radial-gradient(circle at 50% 30%, #000 0%, transparent 78%);
+  }
+
+  .wrap {
+    position: relative;
+    z-index: 1;
+    width: min(1140px, calc(100% - 48px));
+    margin: 0 auto;
+  }
+
+  /* ---------- 顶栏 ---------- */
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 26px 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-family: var(--mono);
+    font-size: 13px;
+    letter-spacing: .16em;
+    text-transform: uppercase;
+    color: var(--paper);
+    text-decoration: none;
+  }
+
+  .brand-mark {
+    width: 30px;
+    height: 30px;
+    border-radius: 9px;
+    border: 1px solid rgba(244, 239, 230, .28);
+    display: grid;
+    place-items: center;
+    position: relative;
+  }
+
+  .brand-mark::before,
+  .brand-mark::after {
+    content: "";
+    position: absolute;
+    border-radius: 50%;
+  }
+
+  .brand-mark::before {
+    width: 9px;
+    height: 9px;
+    background: var(--coral);
+    transform: translateX(-4px);
+  }
+
+  .brand-mark::after {
+    width: 5px;
+    height: 5px;
+    background: var(--amber);
+    transform: translateX(6px);
+    opacity: .9;
+  }
+
+  .top-links {
+    display: flex;
+    gap: 22px;
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: .08em;
+  }
+
+  .top-links a {
+    color: var(--muted);
+    text-decoration: none;
+    transition: color .25s var(--ease);
+  }
+
+  .top-links a:hover { color: var(--paper); }
+
+  /* ---------- Hero ---------- */
+  .hero {
+    display: grid;
+    grid-template-columns: 1.08fr .92fr;
+    gap: 56px;
+    align-items: center;
+    padding: 92px 0 108px;
+  }
+
+  .eyebrow {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: .22em;
+    text-transform: uppercase;
+    color: var(--amber);
+    margin-bottom: 26px;
+  }
+
+  .eyebrow::before {
+    content: "";
+    width: 26px;
+    height: 1px;
+    background: var(--amber);
+    opacity: .8;
+  }
+
+  h1 {
+    font-family: var(--display);
+    font-weight: 600;
+    font-size: clamp(52px, 7.4vw, 96px);
+    line-height: 1.06;
+    letter-spacing: -.02em;
+    margin: 0 0 28px;
+  }
+
+  h1 em {
+    font-style: normal;
+    color: var(--coral);
+    position: relative;
+    white-space: nowrap;
+  }
+
+  h1 em::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: .06em;
+    height: .055em;
+    background: linear-gradient(90deg, var(--coral), var(--amber));
+    opacity: .55;
+  }
+
+  .lede {
+    max-width: 33em;
+    font-size: clamp(15px, 1.5vw, 17px);
+    color: #cfc7b9;
+    margin: 0 0 36px;
+  }
+
+  .lede strong {
+    color: var(--paper);
+    font-weight: 600;
+  }
+
+  .cta-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 14px;
+    align-items: center;
+  }
+
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    padding: 13px 22px;
+    border-radius: 999px;
+    font-size: 14px;
+    letter-spacing: .02em;
+    text-decoration: none;
+    border: 1px solid transparent;
+    transition: transform .25s var(--ease), background .25s var(--ease), border-color .25s var(--ease);
+  }
+
+  .btn-primary {
+    background: var(--paper);
+    color: var(--ink);
+  }
+
+  .btn-primary:hover {
+    transform: translateY(-2px);
+    background: #fff;
+  }
+
+  .btn-ghost {
+    color: var(--paper);
+    border-color: rgba(244, 239, 230, .24);
+  }
+
+  .btn-ghost:hover {
+    border-color: rgba(244, 239, 230, .5);
+    transform: translateY(-2px);
+  }
+
+  .btn span.arrow {
+    font-family: var(--mono);
+    font-size: 13px;
+    opacity: .7;
+  }
+
+  /* ---------- 设备示意 ---------- */
+  .stage {
+    position: relative;
+    height: 480px;
+    display: grid;
+    place-items: center;
+  }
+
+  .halo {
+    position: absolute;
+    width: 360px;
+    height: 360px;
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(255, 92, 61, .30), rgba(255, 92, 61, 0) 68%);
+    filter: blur(6px);
+    animation: breathe 4.6s var(--ease) infinite;
+  }
+
+  .halo.b {
+    width: 280px;
+    height: 280px;
+    background: radial-gradient(circle, rgba(242, 181, 68, .22), rgba(242, 181, 68, 0) 70%);
+    animation-delay: -2.3s;
+  }
+
+  @keyframes breathe {
+    0%, 100% { transform: scale(.9); opacity: .55; }
+    50% { transform: scale(1.08); opacity: .95; }
+  }
+
+  .device {
+    position: absolute;
+    width: 138px;
+    height: 190px;
+    border-radius: 26px;
+    background: linear-gradient(160deg, #201c17, #0a0908 62%);
+    border: 1px solid rgba(244, 239, 230, .16);
+    box-shadow:
+      0 30px 70px rgba(0, 0, 0, .55),
+      inset 0 1px 0 rgba(255, 255, 255, .06);
+    padding: 13px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    transform-origin: center;
+  }
+
+  .device-a {
+    transform: translate(-72px, -16px) rotate(-8deg);
+  }
+
+  .device-b {
+    transform: translate(74px, 18px) rotate(7deg);
+  }
+
+  .screen {
+    flex: 1;
+    border-radius: 15px;
+    background:
+      radial-gradient(120px 90px at 50% 0%, rgba(255, 92, 61, .16), transparent 70%),
+      #080706;
+    border: 1px solid rgba(244, 239, 230, .08);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    overflow: hidden;
+  }
+
+  .screen .clock {
+    font-family: var(--mono);
+    font-size: 22px;
+    letter-spacing: .04em;
+    color: #f7f2e9;
+  }
+
+  .screen .who {
+    font-family: var(--display);
+    font-size: 18px;
+    color: var(--coral);
+  }
+
+  .device-b .screen .who { color: var(--amber); }
+
+  .screen .datenow {
+    font-size: 7px;
+    letter-spacing: .08em;
+    color: rgba(244, 239, 230, .42);
+  }
+
+  .glow {
+    position: absolute;
+    inset: -2px;
+    border-radius: 28px;
+    pointer-events: none;
+    box-shadow: 0 0 0 1px rgba(255, 92, 61, .28), 0 0 34px rgba(255, 92, 61, .30);
+    animation: pulseEdge 3.4s var(--ease) infinite;
+  }
+
+  .device-b .glow {
+    box-shadow: 0 0 0 1px rgba(242, 181, 68, .26), 0 0 30px rgba(242, 181, 68, .24);
+    animation-delay: -1.7s;
+  }
+
+  @keyframes pulseEdge {
+    0%, 100% { opacity: .4; }
+    50% { opacity: 1; }
+  }
+
+  .readout {
+    position: absolute;
+    bottom: 6px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: .12em;
+    color: var(--muted);
+    white-space: nowrap;
+    padding: 7px 14px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: rgba(13, 12, 10, .72);
+    backdrop-filter: blur(8px);
+  }
+
+  .readout b {
+    color: var(--paper);
+    font-weight: 500;
+  }
+
+  /* ---------- 数据条 ---------- */
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    border-top: 1px solid var(--line);
+    border-bottom: 1px solid var(--line);
+  }
+
+  .stat {
+    padding: 26px 22px 28px;
+    border-right: 1px solid var(--line);
+  }
+
+  .stat:last-child { border-right: 0; }
+
+  .stat .k {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: .18em;
+    color: var(--muted);
+    text-transform: uppercase;
+  }
+
+  .stat .v {
+    display: block;
+    margin-top: 8px;
+    font-family: var(--display);
+    font-size: 24px;
+    letter-spacing: -.01em;
+  }
+
+  /* ---------- 章节 ---------- */
+  section.block {
+    padding: 96px 0 24px;
+  }
+
+  .sec-head {
+    display: flex;
+    align-items: baseline;
+    gap: 18px;
+    margin-bottom: 44px;
+  }
+
+  .sec-head .num {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--coral);
+    letter-spacing: .14em;
+  }
+
+  .sec-head h2 {
+    font-family: var(--display);
+    font-weight: 600;
+    font-size: clamp(30px, 3.6vw, 44px);
+    line-height: 1.18;
+    margin: 0;
+    letter-spacing: -.015em;
+  }
+
+  .sec-head p {
+    margin: 0 0 0 auto;
+    max-width: 26em;
+    color: var(--muted);
+    font-size: 14px;
+  }
+
+  .features {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1px;
+    background: var(--line);
+    border: 1px solid var(--line);
+  }
+
+  .feature {
+    background: var(--ink);
+    padding: 32px 28px 36px;
+    transition: background .3s var(--ease);
+  }
+
+  .feature:hover { background: var(--ink-2); }
+
+  .feature .idx {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--muted);
+    letter-spacing: .16em;
+  }
+
+  .feature h3 {
+    font-family: var(--display);
+    font-weight: 600;
+    font-size: 23px;
+    margin: 18px 0 12px;
+  }
+
+  .feature p {
+    margin: 0;
+    color: #bdb5a7;
+    font-size: 14px;
+    line-height: 1.75;
+  }
+
+  /* ---------- 双栏仓库 ---------- */
+  .repos {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 22px;
+  }
+
+  .repo {
+    border: 1px solid var(--line);
+    border-radius: 18px;
+    padding: 30px 28px 28px;
+    background: linear-gradient(165deg, rgba(244, 239, 230, .035), rgba(244, 239, 230, 0));
+    text-decoration: none;
+    color: inherit;
+    display: block;
+    transition: border-color .3s var(--ease), transform .3s var(--ease);
+  }
+
+  .repo:hover {
+    border-color: rgba(244, 239, 230, .3);
+    transform: translateY(-3px);
+  }
+
+  .repo .tag {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: .16em;
+    color: var(--coral);
+    text-transform: uppercase;
+  }
+
+  .repo h3 {
+    font-family: var(--display);
+    font-size: 26px;
+    margin: 14px 0 10px;
+  }
+
+  .repo p {
+    margin: 0 0 18px;
+    color: #bdb5a7;
+    font-size: 14px;
+  }
+
+  .repo ul {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .repo li {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: .06em;
+    color: var(--muted);
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding: 5px 11px;
+  }
+
+  /* ---------- 刷写入口 ---------- */
+  .flash-card {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 36px;
+    padding: 36px 34px;
+    border: 1px solid var(--line);
+    border-radius: 18px;
+    background:
+      radial-gradient(460px 180px at 0% 0%, rgba(242, 181, 68, .12), transparent 72%),
+      linear-gradient(165deg, rgba(244, 239, 230, .04), rgba(244, 239, 230, 0));
+  }
+
+  .flash-card .tag {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: .16em;
+    color: var(--amber);
+    text-transform: uppercase;
+  }
+
+  .flash-card h3 {
+    font-family: var(--display);
+    font-weight: 600;
+    font-size: 26px;
+    margin: 14px 0 10px;
+  }
+
+  .flash-card p {
+    margin: 0;
+    max-width: 48em;
+    color: #bdb5a7;
+    font-size: 14px;
+  }
+
+  .flash-card code {
+    font-family: var(--mono);
+    font-size: .92em;
+    color: var(--amber);
+  }
+
+  .flash-card .btn { flex: none; }
+
+  /* ---------- 模型 ---------- */
+  .models {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 22px;
+  }
+
+  .model-card {
+    display: block;
+    border: 1px solid var(--line);
+    border-radius: 18px;
+    padding: 30px 28px 32px;
+    background: linear-gradient(165deg, rgba(244, 239, 230, .035), rgba(244, 239, 230, 0));
+    color: inherit;
+    text-decoration: none;
+    transition: border-color .3s var(--ease), transform .3s var(--ease);
+  }
+
+  .model-card:hover {
+    border-color: rgba(244, 239, 230, .3);
+    transform: translateY(-3px);
+  }
+
+  .model-card .role {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: .18em;
+    color: var(--coral);
+    text-transform: uppercase;
+  }
+
+  .model-card h3 {
+    font-family: var(--mono);
+    font-weight: 500;
+    font-size: 19px;
+    letter-spacing: -.01em;
+    margin: 14px 0 10px;
+    color: var(--paper);
+  }
+
+  .model-card h3 .arrow {
+    font-size: 14px;
+    color: var(--muted);
+    margin-left: 6px;
+  }
+
+  .model-card p {
+    margin: 0;
+    color: #bdb5a7;
+    font-size: 14px;
+  }
+
+  /* ---------- 引言 ---------- */
+  .quote {
+    margin: 96px 0 0;
+    padding: 56px 0;
+    border-top: 1px solid var(--line);
+    border-bottom: 1px solid var(--line);
+    display: grid;
+    grid-template-columns: 1fr 1.15fr;
+    gap: 48px;
+    align-items: center;
+  }
+
+  .quote blockquote {
+    font-family: var(--display);
+    font-size: clamp(24px, 3vw, 34px);
+    line-height: 1.42;
+    margin: 0;
+    letter-spacing: -.01em;
+  }
+
+  .quote blockquote em {
+    font-style: normal;
+    color: var(--amber);
+  }
+
+  .quote .note {
+    color: var(--muted);
+    font-size: 14px;
+    margin: 0;
+  }
+
+  .quote .note strong { color: var(--paper); font-weight: 600; }
+
+  /* ---------- 页脚 ---------- */
+  footer {
+    padding: 56px 0 64px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    align-items: center;
+    justify-content: space-between;
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: .1em;
+    color: var(--muted);
+  }
+
+  footer a {
+    color: var(--muted);
+    text-decoration: none;
+    transition: color .2s var(--ease);
+  }
+
+  footer a:hover { color: var(--paper); }
+
+  /* ---------- 入场动画 ---------- */
+  .reveal {
+    opacity: 0;
+    transform: translateY(22px);
+    transition: opacity .8s var(--ease), transform .8s var(--ease);
+  }
+
+  .reveal.in {
+    opacity: 1;
+    transform: none;
+  }
+
+  .hero .reveal:nth-child(1) { transition-delay: .05s; }
+  .hero .reveal:nth-child(2) { transition-delay: .16s; }
+  .hero .reveal:nth-child(3) { transition-delay: .27s; }
+
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    .reveal { opacity: 1; transform: none; transition: none; }
+    .halo, .glow { animation: none; }
+  }
+
+  /* ---------- 响应式 ---------- */
+  @media (max-width: 980px) {
+    .hero {
+      grid-template-columns: 1fr;
+      gap: 20px;
+      padding: 64px 0 40px;
+    }
+    .stage { height: 400px; order: -1; }
+    .sec-head { flex-wrap: wrap; }
+    .sec-head p { margin: 10px 0 0; }
+    .features { grid-template-columns: 1fr; }
+    .quote { grid-template-columns: 1fr; gap: 24px; }
+  }
+
+  @media (max-width: 720px) {
+    .wrap { width: calc(100% - 36px); }
+    .top-links { gap: 14px; }
+    .stats { grid-template-columns: 1fr 1fr; }
+    .stat:nth-child(2) { border-right: 0; }
+    .stat:nth-child(1), .stat:nth-child(2) { border-bottom: 1px solid var(--line); }
+    .stage { height: 340px; }
+    .device { width: 112px; height: 156px; }
+    .device-a { transform: translate(-58px, -12px) rotate(-8deg); }
+    .device-b { transform: translate(60px, 14px) rotate(7deg); }
+    .repos { grid-template-columns: 1fr; }
+    .models { grid-template-columns: 1fr; }
+    .flash-card { flex-direction: column; align-items: flex-start; padding: 28px 24px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <header>
+    <a class="brand" href="#top">
+      <span class="brand-mark" aria-hidden="true"></span>
+      CoupleHeartbeat
+    </a>
+    <nav class="top-links" aria-label="仓库链接">
+      <a href="https://github.com/CoupleHeartbeat/CoupleHeartbeatDev" target="_blank" rel="noopener">Firmware</a>
+      <a href="https://github.com/CoupleHeartbeat/CoupleHeartbeatApp" target="_blank" rel="noopener">App</a>
+      <a href="#repos">开源</a>
+    </nav>
+  </header>
+</div>
+
+<main id="top">
+  <div class="wrap">
+    <section class="hero">
+      <div>
+        <div class="eyebrow reveal">ESP32-C3 × FLUTTER · OPEN SOURCE</div>
+        <h1 class="reveal">靠近一点，<br>它就<em>知道</em>。</h1>
+        <p class="lede reveal">
+          一对通过低功耗蓝牙互相感应的 AI 挂饰。距离越近，屏幕边缘的光越亮、心跳音越急；
+          按住说话，云端大模型把回答写在屏幕上。
+          <strong>固件与配套 App 全部开源。</strong>
+        </p>
+        <div class="cta-row reveal">
+          <a class="btn btn-primary" href="#repos">查看两个仓库 <span class="arrow">→</span></a>
+          <a class="btn btn-ghost" href="https://ai-passport.folotoy.cn/tools/web-flasher/" target="_blank" rel="noopener">在线刷写固件 <span class="arrow">↗</span></a>
+        </div>
+      </div>
+
+      <div class="stage" aria-hidden="true">
+        <div class="halo"></div>
+        <div class="halo b"></div>
+
+        <div class="device device-a">
+          <div class="glow"></div>
+          <div class="screen">
+            <span class="clock">22:41</span>
+            <span class="who">阿岚</span>
+            <span class="datenow">10月17日 周五</span>
+          </div>
+        </div>
+
+        <div class="device device-b">
+          <div class="glow"></div>
+          <div class="screen">
+            <span class="clock">22:41</span>
+            <span class="who">小舟</span>
+            <span class="datenow">10月17日 周五</span>
+          </div>
+        </div>
+
+        <div class="readout">距离 <b id="dist">0.4</b> m · 信号 <b id="rssi">-42</b> dBm</div>
+      </div>
+    </section>
+
+    <div class="stats reveal">
+      <div class="stat">
+        <span class="k">Board</span>
+        <span class="v">ESP32-C3</span>
+      </div>
+      <div class="stat">
+        <span class="k">Firmware</span>
+        <span class="v">ESP-IDF 5.5.3</span>
+      </div>
+      <div class="stat">
+        <span class="k">App</span>
+        <span class="v">Flutter</span>
+      </div>
+      <div class="stat">
+        <span class="k">License</span>
+        <span class="v">MIT</span>
+      </div>
+    </div>
+
+    <section class="block">
+      <div class="sec-head">
+        <span class="num">01 / 03</span>
+        <h2>它不响，<br>但你感觉得到。</h2>
+        <p>两台设备各自广播一条 BLE 心跳。靠近不会切换页面，只是让工牌周围的光慢慢醒过来。</p>
+      </div>
+
+      <div class="features">
+        <article class="feature">
+          <span class="idx">PROXIMITY</span>
+          <h3>靠近光效</h3>
+          <p>距离越近，四周光效越亮、呼吸越快，心跳音同步变急。姓名下方实时显示距离与信号强度，对方离开后自动隐藏。</p>
+        </article>
+        <article class="feature">
+          <span class="idx">VOICE</span>
+          <h3>按住说话</h3>
+          <p>长按 OK 录音，松手即上传识别，再把问题交给对话模型。回答以文字显示，整轮对话只保留必要的网络请求。</p>
+        </article>
+        <article class="feature">
+          <span class="idx">POWER</span>
+          <h3>安静待机</h3>
+          <p>无人理会 60 秒后背光降到 10%，只留下姓名、时间和日期；15 分钟后进入深睡，按任意键唤醒。</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="block" id="repos">
+      <div class="sec-head">
+        <span class="num">02 / 03</span>
+        <h2>两条代码线，<br>一套完整体验。</h2>
+        <p>设备端负责感知、显示与语音链路；手机端负责配对、配网与配置。协议共用同一个 BLE 服务。</p>
+      </div>
+
+      <div class="repos">
+        <a class="repo" href="https://github.com/CoupleHeartbeat/CoupleHeartbeatDev" target="_blank" rel="noopener">
+          <span class="tag">Firmware</span>
+          <h3>CoupleHeartbeatDev</h3>
+          <p>运行在 FoloToy AI Passport 上的固件：工牌界面、BLE 心跳、语音对话、低功耗与配网。</p>
+          <ul>
+            <li>ESP-IDF</li>
+            <li>NimBLE</li>
+            <li>LVGL</li>
+            <li>GB2312 字库</li>
+          </ul>
+        </a>
+
+        <a class="repo" href="https://github.com/CoupleHeartbeat/CoupleHeartbeatApp" target="_blank" rel="noopener">
+          <span class="tag">App</span>
+          <h3>CoupleHeartbeatApp</h3>
+          <p>Flutter 手机应用：双设备配对、Wi-Fi 配网、API Key、昵称、心跳音量与时间同步。</p>
+          <ul>
+            <li>Flutter</li>
+            <li>BLE</li>
+            <li>Android / iOS</li>
+          </ul>
+        </a>
+      </div>
+    </section>
+
+    <section class="block" id="models">
+      <div class="sec-head">
+        <span class="num">MODEL</span>
+        <h2>语音与对话，<br>交给 Xiaomi MiMo。</h2>
+        <p>设备只负责采集与显示，识别和回答都走 OpenAI 兼容的 MiMo API；Key 由 App 下发，只保存在设备 NVS。</p>
+      </div>
+
+      <div class="models">
+        <a class="model-card" href="https://mimo.mi.com/models/zh-CN/mimo-v2.5-asr" target="_blank" rel="noopener">
+          <span class="role">Speech → Text</span>
+          <h3>mimo-v2.5-asr<span class="arrow">↗</span></h3>
+          <p>把 8 kHz 单声道录音识别成文字。录音在设备端即时上传，松手后即可拿到转写结果。</p>
+        </a>
+        <a class="model-card" href="https://mimo.mi.com/models/zh-CN/mimo-v2.6-flash" target="_blank" rel="noopener">
+          <span class="role">Dialog</span>
+          <h3>mimo-v2.6-flash<span class="arrow">↗</span></h3>
+          <p>根据转写文本生成简短回复，限制在 40 字以内并关闭 thinking，优先保证响应速度。</p>
+        </a>
+      </div>
+    </section>
+
+    <section class="block" id="flash">
+      <div class="sec-head">
+        <span class="num">TOOL</span>
+        <h2>不装工具，<br>浏览器里刷。</h2>
+        <p>用官方 Web Flasher 通过 USB 直接写入，Windows、macOS、Linux 都可以。</p>
+      </div>
+
+      <div class="flash-card reveal">
+        <div>
+          <span class="tag">Web Flasher</span>
+          <h3>ai-passport.folotoy.cn</h3>
+          <p>
+            用 Chrome 或 Edge 打开刷写页，USB 连接设备后选择合并镜像
+            <code>FoloToy-AI-Passport-full.bin</code>，写入地址 <code>0x0</code>。
+            数据分区位于应用之后，刷写不会清除配对信息、Wi-Fi 凭据与时间。
+          </p>
+        </div>
+        <a class="btn btn-primary" href="https://ai-passport.folotoy.cn/tools/web-flasher/" target="_blank" rel="noopener">打开 Web Flasher <span class="arrow">↗</span></a>
+      </div>
+    </section>
+
+    <section class="block" style="padding-bottom: 0;">
+      <div class="sec-head">
+        <span class="num">03 / 03</span>
+        <h2>在 170 KB 内存里，<br>把事做完。</h2>
+        <p>没有 PSRAM，Wi-Fi、BLE、LVGL 与音频都跑起来后只剩约 30 KB。大部分设计决定都来自这个数字。</p>
+      </div>
+
+      <div class="features">
+        <article class="feature">
+          <span class="idx">MEMORY</span>
+          <h3>缓冲按需收缩</h3>
+          <p>Wi-Fi 收发池、TLS 记录、LVGL 绘制缓冲逐项裁剪；语音识别改为 8 kHz/4 秒，把请求体从 256 KB 降到 64 KB。</p>
+        </article>
+        <article class="feature">
+          <span class="idx">FONT</span>
+          <h3>字库常驻 Flash</h3>
+          <p>GB2312 全集 6 763 个汉字与全角标点预生成进字库，按需取字形，动态文本不再缺字，也不占 RAM。</p>
+        </article>
+        <article class="feature">
+          <span class="idx">DATA</span>
+          <h3>刷机不丢配置</h3>
+          <p>NVS、射频校准与用户分区都排在应用之后，整包刷写不会清除配对、Wi-Fi 凭据与时间。</p>
+        </article>
+      </div>
+    </section>
+
+    <div class="quote reveal">
+      <blockquote>
+        固件、App、文档与调试，<br>
+        都<em>和 AI 一起写</em>。
+      </blockquote>
+      <p class="note">
+        从 BLE 协议、语音链路到 Flutter 界面，开发过程大量借助 AI 辅助：读日志、定位内存问题、
+        重写字库生成器。项目仍在预览阶段，<strong>欢迎 Issue 和 PR</strong>，一起把它做得更有意思。
+      </p>
+    </div>
+  </div>
+</main>
+
+<div class="wrap">
+  <footer>
+    <span>© 2026 COUPLEHEARTBEAT · MIT</span>
+    <span>
+      <a href="https://github.com/CoupleHeartbeat" target="_blank" rel="noopener">GITHUB</a>
+      &nbsp;·&nbsp;
+      <a href="https://github.com/CoupleHeartbeat/CoupleHeartbeatDev" target="_blank" rel="noopener">FIRMWARE</a>
+      &nbsp;·&nbsp;
+      <a href="https://github.com/CoupleHeartbeat/CoupleHeartbeatApp" target="_blank" rel="noopener">APP</a>
+      &nbsp;·&nbsp;
+      <a href="https://ai-passport.folotoy.cn/tools/web-flasher/" target="_blank" rel="noopener">WEB FLASHER</a>
+    </span>
+  </footer>
+</div>
+
+<script>
+  (function () {
+    var reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+    /* 滚动入场 */
+    var items = document.querySelectorAll(".reveal");
+    if (reduced || !("IntersectionObserver" in window)) {
+      items.forEach(function (el) { el.classList.add("in"); });
+    } else {
+      var io = new IntersectionObserver(function (entries) {
+        entries.forEach(function (e) {
+          if (e.isIntersecting) {
+            e.target.classList.add("in");
+            io.unobserve(e.target);
+          }
+        });
+      }, { threshold: 0.12, rootMargin: "0px 0px -8% 0px" });
+      items.forEach(function (el) { io.observe(el); });
+    }
+
+    /* 距离/信号轻微波动，模拟两人在附近走动 */
+    var distEl = document.getElementById("dist");
+    var rssiEl = document.getElementById("rssi");
+    if (distEl && rssiEl && !reduced) {
+      var dist = 0.4;
+      setInterval(function () {
+        dist += (Math.random() - 0.5) * 0.18;
+        if (dist < 0.25) dist = 0.25;
+        if (dist > 1.1) dist = 1.1;
+        var rssi = Math.round(-34 - dist * 22);
+        distEl.textContent = dist.toFixed(1);
+        rssiEl.textContent = String(rssi);
+      }, 2200);
+    }
+  })();
+</script>
+
+</body>
+</html>
