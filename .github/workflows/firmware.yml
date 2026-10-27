@@ -57,7 +57,11 @@ jobs:
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
       - name: Build and verify firmware
-        run: ./tools/validate.sh --firmware
+        run: |
+          set -euo pipefail
+          # GitHub 会覆盖镜像的 ENTRYPOINT，需要自己激活 IDF 环境
+          . "${IDF_PATH:-/opt/esp/idf}/export.sh"
+          ./tools/validate.sh --firmware
 
       - name: Collect release assets
         env:
