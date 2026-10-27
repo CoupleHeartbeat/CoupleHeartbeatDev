@@ -1,0 +1,160 @@
+name: firmware
+
+# 每次推送都会分别编译 main 与 feature/ble-relay 两个分支的固件，
+# 再把两份合并镜像发布到同一个滚动 Release（tag: firmware-latest）。
+
+on:
+  push:
+    branches:
+      - main
+      - feature/ble-relay
+    paths:
+      - 'main/**'
+      - 'components/**'
+      - 'assets/**'
+      - 'tests/**'
+      - 'tools/**'
+      - 'CMakeLists.txt'
+      - 'partitions.csv'
+      - 'sdkconfig.defaults'
+      - '.github/workflows/firmware.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: firmware-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build · ${{ matrix.branch }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    container:
+      image: espressif/idf:v5.5.3
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - branch: main
+            slug: main
+          - branch: feature/ble-relay
+            slug: ble-relay
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out ${{ matrix.branch }}
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ matrix.branch }}
+          fetch-depth: 1
+
+      # 容器内以 root 运行，checkout 出来的工作区需要显式标记为可信
+      - name: Mark the workspace as safe for git
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Build and verify firmware
+        run: ./tools/validate.sh --firmware
+
+      - name: Collect release assets
+        env:
+          BRANCH: ${{ matrix.branch }}
+          slug: ${{ matrix.slug }}
+        run: |
+          set -euo pipefail
+          full="build/FoloToy-AI-Passport-full.bin"
+          sha="$(sha256sum "$full" | cut -d' ' -f1)"
+          commit="$(git rev-parse --short=7 HEAD)"
+          base="FoloToy-AI-Passport-${slug}-${commit}"
+
+          mkdir -p dist
+          cp "$full" "dist/${base}-full.bin"
+          cp "build/firmware/${sha}/manifest.json" "dist/${base}-manifest.json"
+          (
+            cd dist
+            sha256sum "${base}-full.bin" "${base}-manifest.json" > "SHA256SUMS-${slug}"
+          )
+
+          {
+            echo "branch=${BRANCH}"
+            echo "commit=${commit}"
+            echo "asset=${base}-full.bin"
+            echo "sha256=${sha}"
+          } > "dist/BUILD-${slug}.txt"
+
+      - name: Upload assets
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: firmware-${{ matrix.slug }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: firmware-release
+      cancel-in-progress: false
+    steps:
+      - name: Download build outputs
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish rolling release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          tag="firmware-latest"
+
+          {
+            echo "由 GitHub Actions 自动编译，包含 \`main\` 与 \`feature/ble-relay\` 两个分支的最新固件。"
+            echo
+            echo "| 分支 | 提交 | 完整镜像 SHA256 |"
+            echo "| --- | --- | --- |"
+            for meta in dist/BUILD-*.txt; do
+              branch="$(sed -n 's/^branch=//p' "$meta")"
+              commit="$(sed -n 's/^commit=//p' "$meta")"
+              sha="$(sed -n 's/^sha256=//p' "$meta")"
+              echo "| \`${branch}\` | \`${commit}\` | \`${sha}\` |"
+            done
+            echo
+            echo "每个分支各有一个合并镜像、一个包含 ELF/映射文件校验值的 manifest.json"
+            echo "和一份 SHA256SUMS，下载后可直接烧写到偏移 \`0x0\`（8 MB Flash）："
+            echo
+            echo '```bash'
+            echo 'python3 -m esptool --chip esp32c3 -p <PORT> -b 460800 \'
+            echo '  write_flash --flash_mode dio --flash_size 8MB --flash_freq 80m \'
+            echo '  0x0 FoloToy-AI-Passport-<分支>-<提交>-full.bin'
+            echo '```'
+          } > notes.md
+
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" dist/* --clobber
+            gh release edit "$tag" --title "Firmware · latest" --notes-file notes.md
+          else
+            gh release create "$tag" dist/* \
+              --target main \
+              --title "Firmware · latest" \
+              --notes-file notes.md \
+              --prerelease
+          fi
+
+          # 清掉上一轮发布后已不存在的旧镜像，release 里始终只保留最新两份
+          keep="$(cd dist && ls)"
+          gh release view "$tag" --json assets --jq '.assets[].name' |
+            while IFS= read -r name; do
+              if ! grep -qxF "$name" <<<"$keep"; then
+                gh release delete-asset "$tag" "$name" --yes
+              fi
+            done

@@ -14,8 +14,8 @@ run_static_checks() {
 
     python3 tools/check_repo.py
 
-    # 本仓库不再维护 GitHub Actions 工作流。没有 workflow 文件时必须跳过
-    # actionlint：glob 不展开会把字面量当成文件名，校验会误报失败。
+    # 有工作流文件时才运行 actionlint：glob 不展开会把字面量当成文件名，
+    # 无工作流时校验会误报失败。
     local workflows=(.github/workflows/*.yml)
     if [[ -e "${workflows[0]}" ]]; then
         actionlint_bin="${ACTIONLINT_BIN:-}"
