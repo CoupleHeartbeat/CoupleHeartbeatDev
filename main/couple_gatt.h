@@ -3,6 +3,7 @@
 
 #include "esp_err.h"
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -39,11 +40,23 @@ esp_err_t couple_gatt_deinit(void);
 void couple_gatt_notify_status(uint8_t battery, uint8_t mode, uint8_t volume);
 
 /**
- * @brief 主动推送 Wi-Fi 配网状态通知（0xFFE5 特征值）
+ * @brief 当前语音链路的 ATT MTU
  *
- * 无已连接客户端或 GATT 未启动时直接返回，不产生副作用。
+ * 未连接、或 App 尚未订阅 0xFFE9 语音通知时返回 0，调用方据此判断
+ * 能否开始上传录音。
  */
-void couple_gatt_notify_wifi_status(void);
+uint16_t couple_gatt_voice_mtu(void);
+
+/**
+ * @brief 通过 0xFFE9 发送一包语音上行数据（Notify）
+ *
+ * @param data 6 字节协议头 + PCM，见 couple_voice.h
+ * @param len  整包长度，不得超过 MTU-3
+ *
+ * @return ESP_OK 成功；ESP_ERR_INVALID_STATE 链路不可用；
+ *         ESP_ERR_INVALID_SIZE 超过单包上限；ESP_ERR_NO_MEM mbuf 不足
+ */
+esp_err_t couple_gatt_notify_voice(const uint8_t *data, size_t len);
 
 /**
  * @brief 获取当前配对码（4 位十进制，0000-9999）

@@ -10,8 +10,8 @@ couple_power_action_t couple_power_next(couple_power_snap_t snap,
 
     // 互动即使用：AI 对话或对方在附近时抑制息屏与深睡
     const bool interacting = in->mode_ai || in->partner_present;
-    // 深睡额外要求：没有进行中的配置会话（配网/App 连接）
-    const bool session_busy = in->wifi_busy || in->app_connected;
+    // 深睡额外要求：没有进行中的 App 会话（配对配置/AI 对话）
+    const bool session_busy = in->app_connected;
 
     switch (snap.state) {
     case COUPLE_POWER_STATE_ACTIVE:

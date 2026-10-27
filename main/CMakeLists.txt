@@ -8,21 +8,17 @@ idf_component_register(
          "couple_crypto.c"
          "couple_storage.c"
          "couple_gatt.c"
-         "couple_wifi.c"
-         "couple_wifi_parse.c"
-         "couple_wifi_scan.c"
          "couple_time.c"
          "couple_power.c"
          "couple_power_exec.c"
          "couple_userfs.c"
          "couple_ai.c"
-         "couple_ai_json.c"
-         "couple_mimo.c"
+         "couple_voice.c"
          "couple_fonts.c"
          "demo_radio.c"
          "${CMAKE_CURRENT_LIST_DIR}/../assets/fonts/couple_font_16.c"
          "${CMAKE_CURRENT_LIST_DIR}/../assets/fonts/couple_font_20.c"
     INCLUDE_DIRS "."
-    REQUIRES bsp bt esp_event esp_hw_support esp_timer esp_wifi esp_http_client esp-tls fatfs wear_levelling
-             lwip nvs_flash mbedtls json
+    REQUIRES bsp bt esp_event esp_hw_support esp_timer fatfs wear_levelling
+             nvs_flash mbedtls json
 )

@@ -4,7 +4,6 @@
 #include "couple_fonts.h"
 #include "couple_gatt.h"
 #include "couple_power.h"
-#include "couple_wifi.h"
 #include "bsp_display.h"
 #include "bsp_battery.h"
 #include "esp_log.h"
@@ -24,10 +23,10 @@ static lv_obj_t *s_status_label;
 static lv_obj_t *s_hint_label;      // 底部提示（菜单打开时隐藏）
 static lv_obj_t *s_prox_label;      // 靠近时的一行距离/信号
 static lv_obj_t *s_glow_frame;      // 四周边框光效
-static lv_obj_t *s_wifi_icon;       // 右上角 Wi-Fi 图标容器
-static lv_obj_t *s_wifi_arc1;       // 外圈
-static lv_obj_t *s_wifi_arc2;       // 内圈
-static lv_obj_t *s_wifi_dot;        // 扇形焦点
+static lv_obj_t *s_link_icon;       // 右上角 App 连接图标容器
+static lv_obj_t *s_link_arc1;       // 外圈
+static lv_obj_t *s_link_arc2;       // 内圈
+static lv_obj_t *s_link_dot;        // 扇形焦点
 static lv_obj_t *s_divider;         // 时间/姓名之间的分隔线（低功耗屏需隐藏）
 static lv_timer_t *s_timer;
 static lv_timer_t *s_prox_timer;
@@ -111,7 +110,7 @@ static void update_battery(void)
 // 三段对象同心，圆心都落在容器的底边中点，只画上方 225°~315° 的扇形，
 // 因此实际墨迹全部落在容器内部。
 // ============================================================================
-static lv_obj_t *make_wifi_arc(lv_obj_t *parent, int size)
+static lv_obj_t *make_link_arc(lv_obj_t *parent, int size)
 {
     lv_obj_t *arc = lv_arc_create(parent);
     lv_obj_remove_style(arc, NULL, LV_PART_KNOB);
@@ -130,60 +129,47 @@ static lv_obj_t *make_wifi_arc(lv_obj_t *parent, int size)
     return arc;
 }
 
-static void build_wifi_icon(lv_obj_t *parent)
+static void build_link_icon(lv_obj_t *parent)
 {
-    s_wifi_icon = lv_obj_create(parent);
-    lv_obj_set_size(s_wifi_icon, 24, 14);
-    lv_obj_align(s_wifi_icon, LV_ALIGN_TOP_RIGHT, -56, 10);
-    lv_obj_set_style_bg_opa(s_wifi_icon, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(s_wifi_icon, 0, 0);
-    lv_obj_set_style_pad_all(s_wifi_icon, 0, 0);
-    lv_obj_clear_flag(s_wifi_icon, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_clear_flag(s_wifi_icon, LV_OBJ_FLAG_CLICKABLE);
+    s_link_icon = lv_obj_create(parent);
+    lv_obj_set_size(s_link_icon, 24, 14);
+    lv_obj_align(s_link_icon, LV_ALIGN_TOP_RIGHT, -56, 10);
+    lv_obj_set_style_bg_opa(s_link_icon, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(s_link_icon, 0, 0);
+    lv_obj_set_style_pad_all(s_link_icon, 0, 0);
+    lv_obj_clear_flag(s_link_icon, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(s_link_icon, LV_OBJ_FLAG_CLICKABLE);
 
-    s_wifi_arc1 = make_wifi_arc(s_wifi_icon, 20);
-    s_wifi_arc2 = make_wifi_arc(s_wifi_icon, 12);
+    s_link_arc1 = make_link_arc(s_link_icon, 20);
+    s_link_arc2 = make_link_arc(s_link_icon, 12);
 
-    s_wifi_dot = lv_obj_create(s_wifi_icon);
-    lv_obj_set_size(s_wifi_dot, 4, 4);
-    lv_obj_set_style_radius(s_wifi_dot, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_border_width(s_wifi_dot, 0, 0);
-    lv_obj_set_style_pad_all(s_wifi_dot, 0, 0);
-    lv_obj_clear_flag(s_wifi_dot, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_clear_flag(s_wifi_dot, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_align(s_wifi_dot, LV_ALIGN_BOTTOM_MID, 0, 0);
+    s_link_dot = lv_obj_create(s_link_icon);
+    lv_obj_set_size(s_link_dot, 4, 4);
+    lv_obj_set_style_radius(s_link_dot, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_border_width(s_link_dot, 0, 0);
+    lv_obj_set_style_pad_all(s_link_dot, 0, 0);
+    lv_obj_clear_flag(s_link_dot, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(s_link_dot, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_align(s_link_dot, LV_ALIGN_BOTTOM_MID, 0, 0);
 }
 
-// 按配网状态给图标上色：已连接=主题粉，连接中=灰蓝，失败=红，未配置=暗灰
-static void update_wifi_icon(void)
+// App 是否在线：已连接=主题粉，未连接=暗灰（设备自身不再连 Wi-Fi）
+static void update_link_icon(void)
 {
-    if (!s_wifi_arc1) return;
+    if (!s_link_arc1) return;
 
-    uint32_t color;
-    lv_opa_t opa;
-    switch (couple_wifi_get_state()) {
-    case COUPLE_WIFI_STATE_CONNECTED:
-        color = 0xff6b9d; opa = LV_OPA_COVER;
-        break;
-    case COUPLE_WIFI_STATE_CONNECTING:
-        color = 0x9a9ab8; opa = LV_OPA_80;
-        break;
-    case COUPLE_WIFI_STATE_FAILED:
-        color = 0xff6b6b; opa = LV_OPA_COVER;
-        break;
-    default:
-        color = 0x50506a; opa = LV_OPA_50;
-        break;
-    }
+    bool connected = couple_gatt_app_connected();
+    uint32_t color = connected ? 0xff6b9d : 0x50506a;
+    lv_opa_t opa = connected ? LV_OPA_COVER : LV_OPA_50;
 
-    lv_obj_t *parts[2] = { s_wifi_arc1, s_wifi_arc2 };
+    lv_obj_t *parts[2] = { s_link_arc1, s_link_arc2 };
     for (int i = 0; i < 2; i++) {
         lv_obj_set_style_arc_color(parts[i], lv_color_hex(color), LV_PART_MAIN);
         lv_obj_set_style_arc_opa(parts[i], opa, LV_PART_MAIN);
     }
-    if (s_wifi_dot) {
-        lv_obj_set_style_bg_color(s_wifi_dot, lv_color_hex(color), 0);
-        lv_obj_set_style_bg_opa(s_wifi_dot, opa, 0);
+    if (s_link_dot) {
+        lv_obj_set_style_bg_color(s_link_dot, lv_color_hex(color), 0);
+        lv_obj_set_style_bg_opa(s_link_dot, opa, 0);
     }
 }
 
@@ -444,8 +430,8 @@ static void tick(lv_timer_t *timer)
         update_battery();
     }
 
-    // Wi-Fi 状态变化（配网/断线）要尽快反映到右上角图标
-    update_wifi_icon();
+    // App 连接状态变化（连上/断开）要尽快反映到右上角图标
+    update_link_icon();
 
     // 临时提示倒计时结束后恢复状态显示
     if (s_status_restore_ticks > 0 && --s_status_restore_ticks == 0) {
@@ -485,9 +471,9 @@ void couple_badge_enter(void)
     lv_obj_align(s_battery_label, LV_ALIGN_TOP_RIGHT, -12, 8);
     lv_label_set_text(s_battery_label, "--%");
 
-    // Wi-Fi 图标：紧邻电量左侧
-    build_wifi_icon(s_scr);
-    update_wifi_icon();
+    // App 连接图标：紧邻电量左侧
+    build_link_icon(s_scr);
+    update_link_icon();
 
     // 角色标识
     s_status_label = lv_label_create(s_scr);
@@ -602,10 +588,10 @@ void couple_badge_exit(void)
         s_hint_label = NULL;
         s_prox_label = NULL;
         s_glow_frame = NULL;
-        s_wifi_icon = NULL;
-        s_wifi_arc1 = NULL;
-        s_wifi_arc2 = NULL;
-        s_wifi_dot = NULL;
+        s_link_icon = NULL;
+        s_link_arc1 = NULL;
+        s_link_arc2 = NULL;
+        s_link_dot = NULL;
         s_divider = NULL;
     }
     s_ui = UI_IDLE;
@@ -728,7 +714,7 @@ void couple_badge_set_minimal(bool minimal)
     }
 
     lv_obj_t *others[] = {
-        s_battery_label, s_status_label, s_wifi_icon, s_divider,
+        s_battery_label, s_status_label, s_link_icon, s_divider,
         s_hint_label, s_prox_label, s_glow_frame,
     };
     for (size_t i = 0; i < sizeof(others) / sizeof(others[0]); i++) {

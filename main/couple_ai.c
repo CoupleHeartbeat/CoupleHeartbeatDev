@@ -1,48 +1,42 @@
 // main/couple_ai.c —— AI 语音对话页实现
+//
+// 设备不再自行联网：录音时边采边经 BLE 0xFFE9 推给手机，手机完成 ASR 与
+// 大模型请求后通过 0xFFEA 回传文本，本页只负责录音、状态反馈与展示回复。
 #include "couple_ai.h"
 
 #include "couple_app.h"
 #include "couple_fonts.h"
-#include "couple_mimo.h"
-#include "couple_wifi.h"
+#include "couple_gatt.h"
+#include "couple_voice.h"
 #include "bsp_audio.h"
 #include "bsp_display.h"
 #include "esp_log.h"
-#include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
 #include "lvgl.h"
-#include "nvs.h"
 #include <stdio.h>
 #include <string.h>
 
 static const char *TAG = "couple_ai";
 
-// 识别采样率与单次录音上限。提前结束的录音用静音补齐到声明长度，
-// 这样请求体长度始终与 WAV 头一致（服务端按声明长度收流）。
-// 8kHz 单声道 16bit：ASR 仍可识别，请求体只有 16kHz 的一半，
-// 上传与识别等待时间随之减半。
+// 手机端按此格式构造 WAV 送 ASR：8 kHz / 16 bit / 单声道。
 #define COUPLE_AI_SAMPLE_RATE 8000
 #define COUPLE_AI_RECORD_SECONDS 4
 #define COUPLE_AI_TOTAL_PCM \
     (COUPLE_AI_SAMPLE_RATE * 2 * COUPLE_AI_RECORD_SECONDS)
 
-#define COUPLE_AI_PCM_CHUNK 2048
+#define COUPLE_AI_PCM_CHUNK 1024
 
-#define AI_NVS_NAMESPACE "couple_ai"
-#define AI_NVS_KEY       "api_key"
-#define AI_KEY_MAX       256
-
-#define AI_USER_TEXT_MAX  160
 #define AI_REPLY_TEXT_MAX 400
+// 松手后等待手机完成 ASR 与大模型请求的上限
+#define AI_REPLY_TIMEOUT_MS 30000
+#define AI_REPLY_POLL_MS 200
 
 typedef enum {
     AI_STATE_IDLE = 0,     // 待机，等按键
-    AI_STATE_LISTENING,    // 录音中
-    AI_STATE_TRANSCRIBING, // 松手后：上传录音、语音转文字中
-    AI_STATE_THINKING,     // 识别 + 对话请求中
-    AI_STATE_SPEAKING,     // 语音播报中
+    AI_STATE_LISTENING,    // 录音并通过 BLE 上传中
+    AI_STATE_THINKING,     // 已发完录音，等手机回传文本
     AI_STATE_ERROR,        // 出错
 } ai_state_t;
 
@@ -51,93 +45,33 @@ typedef enum {
     AI_CMD_STOP,        // 结束录音
 } ai_cmd_t;
 
+// 手机回传的一条回复：0xFFEA 写入内容去掉首字节 status 后的文本
+typedef struct {
+    uint8_t status;
+    char text[AI_REPLY_TEXT_MAX];
+} ai_reply_msg_t;
+
 // ============================================================================
 // 状态
 // ============================================================================
 static bool s_active;               // 页面是否在前台
 static ai_state_t s_state = AI_STATE_IDLE;
 static volatile bool s_stop_requested;
+static volatile bool s_abort;       // 页面退出：打断录音/等待
 static volatile int s_listen_seconds_left;
 static char s_error_text[48];
-
-static char s_user_text[AI_USER_TEXT_MAX];
 static char s_reply_text[AI_REPLY_TEXT_MAX];
 
 static QueueHandle_t s_cmd_queue;
+static QueueHandle_t s_reply_queue;
 static TaskHandle_t s_worker;
-
-static char s_api_key[AI_KEY_MAX];
-static bool s_key_loaded;
 
 static lv_obj_t *s_scr;
 static lv_obj_t *s_state_label;
-static lv_obj_t *s_user_label;
 static lv_obj_t *s_reply_label;
 static lv_obj_t *s_hint_label;
 static lv_timer_t *s_timer;
 static int s_dot_phase;
-
-// ============================================================================
-// API Key 存储
-// ============================================================================
-static esp_err_t key_load(void)
-{
-    if (s_key_loaded) return s_api_key[0] ? ESP_OK : ESP_ERR_NOT_FOUND;
-    s_key_loaded = true;
-
-    nvs_handle_t h;
-    if (nvs_open(AI_NVS_NAMESPACE, NVS_READONLY, &h) != ESP_OK) {
-        return ESP_ERR_NOT_FOUND;
-    }
-    size_t len = sizeof(s_api_key);
-    esp_err_t err = nvs_get_str(h, AI_NVS_KEY, s_api_key, &len);
-    nvs_close(h);
-    if (err != ESP_OK || s_api_key[0] == '\0') {
-        s_api_key[0] = '\0';
-        return ESP_ERR_NOT_FOUND;
-    }
-    return ESP_OK;
-}
-
-esp_err_t couple_ai_set_api_key(const char *key)
-{
-    if (!key || key[0] == '\0') return ESP_ERR_INVALID_ARG;
-    if (strlen(key) >= sizeof(s_api_key)) return ESP_ERR_INVALID_SIZE;
-
-    nvs_handle_t h;
-    esp_err_t err = nvs_open(AI_NVS_NAMESPACE, NVS_READWRITE, &h);
-    if (err != ESP_OK) return err;
-    err = nvs_set_str(h, AI_NVS_KEY, key);
-    if (err == ESP_OK) err = nvs_commit(h);
-    nvs_close(h);
-    if (err != ESP_OK) return err;
-
-    snprintf(s_api_key, sizeof(s_api_key), "%s", key);
-    s_key_loaded = true;
-    ESP_LOGI(TAG, "AI Key 已保存（长度 %u）", (unsigned)strlen(key));
-    return ESP_OK;
-}
-
-esp_err_t couple_ai_clear_api_key(void)
-{
-    nvs_handle_t h;
-    esp_err_t err = nvs_open(AI_NVS_NAMESPACE, NVS_READWRITE, &h);
-    if (err != ESP_OK) return err;
-    err = nvs_erase_key(h, AI_NVS_KEY);
-    if (err == ESP_ERR_NVS_NOT_FOUND) err = ESP_OK;
-    if (err == ESP_OK) err = nvs_commit(h);
-    nvs_close(h);
-
-    memset(s_api_key, 0, sizeof(s_api_key));
-    s_key_loaded = true;
-    ESP_LOGI(TAG, "AI Key 已清除");
-    return err;
-}
-
-bool couple_ai_has_api_key(void)
-{
-    return key_load() == ESP_OK;
-}
 
 // ============================================================================
 // 页面渲染（调用方须持有 LVGL 锁）
@@ -162,19 +96,9 @@ static void ai_render_state(void)
         lv_label_set_text(s_hint_label, "松手发送");
         break;
     }
-    case AI_STATE_TRANSCRIBING:
-        lv_label_set_text(s_state_label, "语音转文字中...");
-        lv_obj_set_style_text_color(s_state_label, lv_color_hex(0x6bb5ff), 0);
-        lv_label_set_text(s_hint_label, "长按OK返回");
-        break;
     case AI_STATE_THINKING:
         lv_label_set_text(s_state_label, "思考中...");
         lv_obj_set_style_text_color(s_state_label, lv_color_hex(0x6bb5ff), 0);
-        lv_label_set_text(s_hint_label, "长按OK返回");
-        break;
-    case AI_STATE_SPEAKING:
-        lv_label_set_text(s_state_label, "播放中...");
-        lv_obj_set_style_text_color(s_state_label, lv_color_hex(0x7bd88f), 0);
         lv_label_set_text(s_hint_label, "长按OK返回");
         break;
     case AI_STATE_ERROR:
@@ -196,9 +120,6 @@ static void ai_publish(void)
         return;
     }
 
-    if (s_user_label) {
-        lv_label_set_text(s_user_label, s_user_text[0] ? s_user_text : " ");
-    }
     if (s_reply_label) {
         lv_label_set_text(s_reply_label, s_reply_text[0] ? s_reply_text : " ");
     }
@@ -214,7 +135,11 @@ static void ai_set_state(ai_state_t st)
 
 static void ai_set_error(const char *text)
 {
-    snprintf(s_error_text, sizeof(s_error_text), "%s", text ? text : "连接失败");
+    if (!text) text = "连接失败";
+    size_t n = strlen(text);
+    if (n > sizeof(s_error_text) - 1) n = sizeof(s_error_text) - 1;
+    memcpy(s_error_text, text, n);
+    s_error_text[n] = '\0';
     ai_set_state(AI_STATE_ERROR);
 }
 
@@ -232,110 +157,119 @@ static void ai_tick(lv_timer_t *timer)
 // ============================================================================
 // 语音管线（工作任务内执行）
 // ============================================================================
-static esp_err_t ai_do_record_and_asr(void)
-{
-    uint32_t total = COUPLE_AI_TOTAL_PCM;
 
+// 边录边发：不缓存整段音频（本板无 PSRAM，64KB 缓冲会吃掉全部空闲堆）。
+// END 包的 offset 就是实际发送的字节数，用户提前松手时不做静音补齐。
+static esp_err_t ai_do_record_and_send(void)
+{
     if (bsp_audio_set_format(COUPLE_AI_SAMPLE_RATE, 16, 1) != ESP_OK) {
         ESP_LOGE(TAG, "麦克风格式设置失败");
         return ESP_FAIL;
     }
 
-    esp_err_t err = couple_mimo_asr_begin(s_api_key, COUPLE_AI_SAMPLE_RATE, 1, total);
+    esp_err_t err = couple_voice_stream_begin(COUPLE_AI_TOTAL_PCM);
     if (err != ESP_OK) return err;
 
     ai_set_state(AI_STATE_LISTENING);
     s_listen_seconds_left = COUPLE_AI_RECORD_SECONDS;
 
     static uint8_t buf[COUPLE_AI_PCM_CHUNK];
-    uint32_t fed = 0;
-    while (fed < total) {
-        if (couple_mimo_is_cancelled()) break;
+    uint32_t sent = 0;
+    while (sent < COUPLE_AI_TOTAL_PCM) {
+        if (s_abort) {
+            couple_voice_stream_cancel();
+            return ESP_ERR_INVALID_STATE;
+        }
         if (s_stop_requested) break;
-        uint32_t want = total - fed;
+
+        uint32_t want = COUPLE_AI_TOTAL_PCM - sent;
         if (want > sizeof(buf)) want = sizeof(buf);
         if (bsp_audio_read(buf, want) != ESP_OK) {
             ESP_LOGW(TAG, "读取麦克风失败，提前结束录音");
             break;
         }
-        if (couple_mimo_asr_feed(buf, want) != ESP_OK) {
-            ESP_LOGW(TAG, "上传录音失败");
-            break;
+        err = couple_voice_stream_send(buf, want);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "语音上传失败: %s", esp_err_to_name(err));
+            return err;
         }
-        fed += want;
+        sent += want;
         s_listen_seconds_left =
-            (int)((total - fed) / (COUPLE_AI_SAMPLE_RATE * 2));
+            (int)((COUPLE_AI_TOTAL_PCM - sent) / (COUPLE_AI_SAMPLE_RATE * 2));
     }
 
-    // 松手即上传识别：先给用户"语音转文字中..."的反馈，再补齐长度等识别结果
-    ai_set_state(AI_STATE_TRANSCRIBING);
+    if (sent == 0) {
+        // 松手太快、没采到有效音频：让手机直接丢弃，省一次 ASR 请求
+        couple_voice_stream_cancel();
+        return ESP_ERR_INVALID_STATE;
+    }
+    return couple_voice_stream_end();
+}
 
-    // 提前结束时补静音，保证请求体长度与 WAV 头声明一致
-    if (fed < total) {
-        memset(buf, 0, sizeof(buf));
-        while (fed < total) {
-            uint32_t want = total - fed;
-            if (want > sizeof(buf)) want = sizeof(buf);
-            if (couple_mimo_asr_feed(buf, want) != ESP_OK) break;
-            fed += want;
+static bool ai_wait_reply(uint32_t timeout_ms)
+{
+    ai_reply_msg_t msg;
+    uint32_t waited = 0;
+
+    while (waited < timeout_ms) {
+        if (s_abort) return false;
+        if (xQueueReceive(s_reply_queue, &msg,
+                          pdMS_TO_TICKS(AI_REPLY_POLL_MS)) == pdTRUE) {
+            if (msg.status != COUPLE_VOICE_REPLY_OK) {
+                ai_set_error(msg.text[0] ? msg.text : "手机处理失败");
+                return false;
+            }
+            if (msg.text[0] == '\0') {
+                ai_set_error("没听清，请再说一次");
+                return false;
+            }
+            snprintf(s_reply_text, sizeof(s_reply_text), "%s", msg.text);
+            ai_set_state(AI_STATE_IDLE);
+            ai_publish();
+            return true;
         }
-        s_listen_seconds_left = 0;
+        waited += AI_REPLY_POLL_MS;
     }
 
-    char text[AI_USER_TEXT_MAX];
-    err = couple_mimo_asr_end(text, sizeof(text));
-    if (err == ESP_OK && text[0] != '\0') {
-        snprintf(s_user_text, sizeof(s_user_text), "%s", text);
-    }
-    // 识别已结束（成功或失败），进入对话请求阶段
-    ai_set_state(AI_STATE_THINKING);
-    ai_publish();
-    return err;
+    ai_set_error("手机无响应");
+    return false;
 }
 
 static void ai_run_turn(void)
 {
-    s_user_text[0] = '\0';
     s_reply_text[0] = '\0';
     s_error_text[0] = '\0';
+    s_abort = false;
     // s_stop_requested 不在这里清除：松手可能发生在 START 入队后、
     // 录音开始前的窗口，在按键入口（长按投递 START 时）清除更安全。
-    couple_mimo_clear_cancel();
     ai_publish();
 
-    if (!couple_ai_has_api_key()) {
-        ai_set_error("请先在App配置Key");
-        return;
-    }
-    if (couple_wifi_get_state() != COUPLE_WIFI_STATE_CONNECTED) {
-        ai_set_error("请先在App配置Wi-Fi");
+    if (couple_gatt_voice_mtu() == 0) {
+        ai_set_error("请用App连接");
         return;
     }
 
-    esp_err_t err = ai_do_record_and_asr();
-    if (couple_mimo_is_cancelled()) return;
-    if (err == ESP_OK && s_user_text[0] == '\0') {
-        ai_set_error("没听清，请再说一次");
-        return;
+    // 丢弃上一轮可能残留的回复，避免把旧文本当成这一轮的结果
+    ai_reply_msg_t stale;
+    while (xQueueReceive(s_reply_queue, &stale, 0) == pdTRUE) {
     }
+
+    esp_err_t err = ai_do_record_and_send();
+    if (s_abort) return;
     if (err != ESP_OK) {
-        ai_set_error("连接失败");
+        if (couple_gatt_voice_mtu() == 0) {
+            ai_set_error("请用App连接");
+        } else if (err == ESP_ERR_INVALID_STATE) {
+            ai_set_error("没听清，请再说一次");
+        } else {
+            ai_set_error("连接失败");
+        }
         return;
     }
 
     ai_set_state(AI_STATE_THINKING);
-    char reply[AI_REPLY_TEXT_MAX];
-    err = couple_mimo_chat(s_api_key, s_user_text, reply, sizeof(reply));
-    if (couple_mimo_is_cancelled()) return;
-    if (err != ESP_OK) {
-        ai_set_error("连接失败");
-        return;
-    }
-    snprintf(s_reply_text, sizeof(s_reply_text), "%s", reply);
     ai_publish();
-
-    // 不做语音合成：只保留文字回复，省掉一次 TLS 连接与音频播放。
-    ai_set_state(AI_STATE_IDLE);
+    ai_wait_reply(AI_REPLY_TIMEOUT_MS);
 }
 
 static void ai_worker(void *arg)
@@ -345,11 +279,7 @@ static void ai_worker(void *arg)
     for (;;) {
         if (xQueueReceive(s_cmd_queue, &cmd, portMAX_DELAY) != pdTRUE) continue;
         if (cmd == AI_CMD_START) {
-            // 对话期间关闭 Wi-Fi 省电：modem sleep 会让上行 ACK 明显变慢，
-            // 而一轮对话只有几秒，功耗代价可以接受。结束后恢复省电。
-            esp_wifi_set_ps(WIFI_PS_NONE);
             ai_run_turn();
-            esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
         } else if (cmd == AI_CMD_STOP) {
             s_stop_requested = true;
         }
@@ -364,6 +294,31 @@ static esp_err_t ai_post(ai_cmd_t cmd)
 }
 
 // ============================================================================
+// App 回传的回复（由 GATT 写回调调用，运行在 NimBLE host 任务）
+//
+// 这里只做拷贝入队，绝不能解析或阻塞：host 任务栈小，且会拖慢整个 BLE 协议栈。
+// ============================================================================
+void couple_ai_on_remote_reply(uint8_t status, const char *text, size_t len)
+{
+    if (!s_reply_queue) return;
+
+    ai_reply_msg_t msg;
+    msg.status = status;
+
+    size_t n = len;
+    if (n > sizeof(msg.text) - 1) n = sizeof(msg.text) - 1;
+    if (text && n > 0) {
+        memcpy(msg.text, text, n);
+    } else {
+        n = 0;
+    }
+    msg.text[n] = '\0';
+
+    // 一轮对话只等一条回复；队列满说明是重复/过期回复，直接丢弃
+    (void)xQueueSend(s_reply_queue, &msg, 0);
+}
+
+// ============================================================================
 // 页面生命周期
 // ============================================================================
 void couple_ai_enter(void)
@@ -373,9 +328,9 @@ void couple_ai_enter(void)
     s_active = true;
     s_state = AI_STATE_IDLE;
     s_stop_requested = false;
+    s_abort = false;
     s_error_text[0] = '\0';
     s_dot_phase = 0;
-    s_user_text[0] = '\0';
     s_reply_text[0] = '\0';
 
     lv_font_t *font_small = couple_font_get(COUPLE_FONT_SMALL);
@@ -398,21 +353,13 @@ void couple_ai_enter(void)
     lv_obj_set_style_text_font(s_state_label, font_large, 0);
     lv_obj_align(s_state_label, LV_ALIGN_TOP_MID, 0, 46);
 
-    s_user_label = lv_label_create(s_scr);
-    lv_obj_set_style_text_font(s_user_label, font_small, 0);
-    lv_obj_set_style_text_color(s_user_label, lv_color_hex(0xe0e0e0), 0);
-    lv_obj_set_style_text_align(s_user_label, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_width(s_user_label, 200);
-    lv_label_set_long_mode(s_user_label, LV_LABEL_LONG_WRAP);
-    lv_obj_align(s_user_label, LV_ALIGN_TOP_MID, 0, 96);
-
     s_reply_label = lv_label_create(s_scr);
     lv_obj_set_style_text_font(s_reply_label, font_small, 0);
     lv_obj_set_style_text_color(s_reply_label, lv_color_hex(0x9ad8ff), 0);
     lv_obj_set_style_text_align(s_reply_label, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_width(s_reply_label, 200);
     lv_label_set_long_mode(s_reply_label, LV_LABEL_LONG_WRAP);
-    lv_obj_align(s_reply_label, LV_ALIGN_TOP_MID, 0, 140);
+    lv_obj_align(s_reply_label, LV_ALIGN_TOP_MID, 0, 96);
 
     s_hint_label = lv_label_create(s_scr);
     lv_obj_set_style_text_font(s_hint_label, font_small, 0);
@@ -431,8 +378,8 @@ void couple_ai_exit(void)
     ESP_LOGI(TAG, "退出 AI 对话页");
 
     s_active = false;
-    // 让进行中的请求尽快收尾；任务自己会在下一次检查点返回
-    couple_mimo_cancel();
+    // 让进行中的录音/等待尽快收尾；工作任务的检查点负责发 CANCEL
+    s_abort = true;
     s_stop_requested = true;
     (void)ai_post(AI_CMD_STOP);
 
@@ -445,7 +392,6 @@ void couple_ai_exit(void)
         s_scr = NULL;
     }
     s_state_label = NULL;
-    s_user_label = NULL;
     s_reply_label = NULL;
     s_hint_label = NULL;
     s_state = AI_STATE_IDLE;
@@ -465,7 +411,7 @@ void couple_ai_key(bsp_btn_t btn, bsp_btn_ev_t ev)
 
     switch (ev) {
     case BSP_BTN_LONG:
-        // 按住超过阈值（长按）：待机/出错时开始录音；思考/播报中长按返回
+        // 按住超过阈值（长按）：待机/出错时开始录音；思考中长按返回
         switch (s_state) {
         case AI_STATE_IDLE:
         case AI_STATE_ERROR:
@@ -474,8 +420,6 @@ void couple_ai_key(bsp_btn_t btn, bsp_btn_ev_t ev)
             (void)ai_post(AI_CMD_START);
             break;
         case AI_STATE_THINKING:
-        case AI_STATE_TRANSCRIBING:
-        case AI_STATE_SPEAKING:
             // 长按返回工牌页；模式切换会调用 couple_ai_exit 释放本页
             couple_mode_switch(COUPLE_MODE_BADGE);
             break;
@@ -511,17 +455,24 @@ void couple_ai_key(bsp_btn_t btn, bsp_btn_ev_t ev)
 // ============================================================================
 esp_err_t couple_ai_init(void)
 {
-    key_load();
+    if (s_cmd_queue && s_reply_queue) return ESP_OK;
 
-    if (s_cmd_queue) return ESP_OK;
     s_cmd_queue = xQueueCreate(4, sizeof(ai_cmd_t));
-    if (!s_cmd_queue) return ESP_ERR_NO_MEM;
-
-    // HTTP + JSON 拼装 + mbedTLS 握手都在这一条任务上；8KB 实测在
-    // TTS 起播阶段栈溢出（Stack protection fault），提到 12KB。
-    if (xTaskCreate(ai_worker, "couple_ai", 12288, NULL, 4, &s_worker) != pdPASS) {
-        vQueueDelete(s_cmd_queue);
+    s_reply_queue = xQueueCreate(2, sizeof(ai_reply_msg_t));
+    if (!s_cmd_queue || !s_reply_queue) {
+        if (s_cmd_queue) vQueueDelete(s_cmd_queue);
+        if (s_reply_queue) vQueueDelete(s_reply_queue);
         s_cmd_queue = NULL;
+        s_reply_queue = NULL;
+        return ESP_ERR_NO_MEM;
+    }
+
+    // 录音 + BLE 分包发送，无 TLS/JSON，4KB 足够
+    if (xTaskCreate(ai_worker, "couple_ai", 4096, NULL, 4, &s_worker) != pdPASS) {
+        vQueueDelete(s_cmd_queue);
+        vQueueDelete(s_reply_queue);
+        s_cmd_queue = NULL;
+        s_reply_queue = NULL;
         return ESP_ERR_NO_MEM;
     }
 

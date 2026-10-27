@@ -11,7 +11,6 @@
 #include "couple_gatt.h"
 #include "couple_power.h"
 #include "couple_userfs.h"
-#include "couple_wifi.h"
 #include "bsp_i2c.h"
 #include "bsp_display.h"
 #include "bsp_button.h"
@@ -112,8 +111,6 @@ static void couple_tick_task(void *arg)
         const couple_power_inputs_t power_in = {
             .mode_ai = couple_mode_get() == COUPLE_MODE_AI,
             .partner_present = g_couple_state.partner_connected,
-            .wifi_busy = couple_wifi_get_state() == COUPLE_WIFI_STATE_CONNECTING ||
-                         couple_wifi_is_scanning(),
             .app_connected = couple_gatt_app_connected(),
         };
         couple_power_tick(&power_in);
@@ -276,17 +273,8 @@ void app_main(void)
     couple_mode_init();
     memcpy(&g_couple_state.pair_info, &pair_info, sizeof(pair_info));
 
-    // 初始化 Wi-Fi 配网驱动与 AI 对话任务。
-    // 必须放在音频/GATT(NimBLE) 之前：两者初始化后仅剩约 15KB 空闲堆
-    // （实测 esp_wifi_init 的静态 RX buffer 分配失败 ESP_ERR_NO_MEM，
-    // 连带 8KB AI 任务栈创建失败），而 Wi-Fi/AI 均只依赖 NVS，不依赖音频和蓝牙。
-    // 这里只做 esp_wifi_init（驱动静态结构）；射频启动（autoconnect 入队）
-    // 推迟到 NimBLE 初始化成功之后，避免 Wi-Fi 运行时缓冲抢占 MSYS 连续堆。
-    esp_err_t wifi_err = couple_wifi_init();
-    if (wifi_err != ESP_OK) {
-        ESP_LOGW(TAG, "Wi-Fi 配网初始化失败: %s", esp_err_to_name(wifi_err));
-    }
-
+    // 初始化 AI 对话任务（设备不再连 Wi-Fi，语音全部经 BLE 交给手机处理）。
+    // 放在音频/GATT(NimBLE) 之前：只依赖 FreeRTOS 队列，早建任务不会再抢堆。
     esp_err_t ai_err = couple_ai_init();
     if (ai_err != ESP_OK) {
         ESP_LOGW(TAG, "AI 对话初始化失败: %s", esp_err_to_name(ai_err));
@@ -330,12 +318,6 @@ void app_main(void)
         ESP_LOGW(TAG, "GATT 服务初始化失败: %s", esp_err_to_name(gatt_err));
     }
 
-    // NimBLE 拿到内存后再启动 Wi-Fi 射频（autoconnect 仅入队，
-    // 由 Wi-Fi 任务异步完成连接，不阻塞启动流程）
-    if (wifi_err == ESP_OK && couple_wifi_autoconnect() == ESP_OK) {
-        ESP_LOGI(TAG, "使用已保存的 Wi-Fi 凭据自动连接");
-    }
-
     // 启动心跳扫描（依赖 GATT 持有的 NimBLE host；host 未同步时由 tick 重试）
     if (gatt_err == ESP_OK) {
         esp_err_t ble_err = couple_ble_start();
@@ -364,7 +346,7 @@ void app_main(void)
              g_couple_state.pair_info.role,
              batt_err == ESP_OK ? "OK" : "FAIL",
              gatt_err == ESP_OK ? "OK" : "FAIL");
-    // 本板无 PSRAM，Wi-Fi + BLE + TLS 同时驻留是主要风险，启动后先记录堆余量
+    // 本板无 PSRAM，BLE + LVGL + 音频同时驻留是主要风险，启动后先记录堆余量
     ESP_LOGI(TAG, "空闲堆: %u 字节 (历史最小 %u)",
              (unsigned)esp_get_free_heap_size(),
              (unsigned)esp_get_minimum_free_heap_size());

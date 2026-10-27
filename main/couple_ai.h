@@ -1,12 +1,15 @@
 // main/couple_ai.h —— AI 语音对话页（长按 OK 进入）
 //
-// 链路：短按 OK 开始录音 → 松手/录满后上传识别 → 文本对话 → 语音合成播放。
-// 语音请求全部在独立工作任务里串行执行，按键回调只投递命令，不阻塞 LVGL。
+// 链路：长按 OK 录音 → 边录边经 BLE 0xFFE9 上传 → 手机做 ASR 与大模型请求
+// → 手机经 0xFFEA 回传文本 → 本页展示。录音与等待都在独立工作任务里串行执行，
+// 按键回调只投递命令，不阻塞 LVGL。
 #pragma once
 
 #include "bsp_button.h"
 #include "esp_err.h"
 #include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
 
 // 页面生命周期（由 couple_mode_switch 调用，调用方须持有 LVGL 锁）
 void couple_ai_enter(void);
@@ -20,8 +23,9 @@ bool couple_ai_is_active(void);
 esp_err_t couple_ai_init(void);
 
 // ============================================================================
-// API Key 存储（仅存设备本地 NVS；开源仓库与日志中都不得出现明文）
+// App 回传的回复（由 GATT 0xFFEA 写回调调用，运行在 NimBLE host 任务）
+//
+// 只做拷贝入队，不阻塞、不解析；一轮对话只取第一条。
+// status: 0 = 成功，1 = 失败（此时 text 为提示信息，可为空）。
 // ============================================================================
-esp_err_t couple_ai_set_api_key(const char *key);
-esp_err_t couple_ai_clear_api_key(void);
-bool couple_ai_has_api_key(void);
+void couple_ai_on_remote_reply(uint8_t status, const char *text, size_t len);

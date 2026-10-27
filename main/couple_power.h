@@ -4,7 +4,8 @@
 //   息屏：无操作 60s 且对方不在附近/AI 对话中 → 关背光；按键或对方靠近立即点亮。
 //   深睡：无操作 15min 且无任何活跃会话 → 警告屏 10s（自动路径可按键取消）→ 深睡。
 //   手动：设置菜单"立即休眠" → 警告屏 2s（不可取消）→ 深睡。
-// 深睡期间 BLE/Wi-Fi 全停，按任意键唤醒并重启（重启后由 key_guard 吞掉唤醒键残留）。
+// 深睡期间 BLE 全停（设备不再连 Wi-Fi），按任意键唤醒并重启（重启后由 key_guard
+// 吞掉唤醒键残留）。
 //
 // 决策核心 couple_power_next() 不依赖 ESP-IDF / LVGL；执行（背光、深睡序列）在
 // couple_power_exec.c，由 firmware 构建验证。
@@ -42,8 +43,7 @@ typedef enum {
 typedef struct {
     bool mode_ai;          // AI 对话进行中（交互密集，抑制息屏与深睡）
     bool partner_present;  // 对方心跳在线（互动即使用，抑制息屏与深睡）
-    bool wifi_busy;        // Wi-Fi 正在配网/扫描（中断会失败，抑制深睡）
-    bool app_connected;    // App 经 GATT 在线（抑制深睡，避免配置中断）
+    bool app_connected;    // App 经 GATT 在线（抑制深睡，避免配置/对话中断）
 } couple_power_inputs_t;
 
 typedef struct {

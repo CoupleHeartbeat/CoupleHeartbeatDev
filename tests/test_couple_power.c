@@ -11,7 +11,7 @@ static int failures;
     } \
 } while (0)
 
-static const couple_power_inputs_t IDLE = { false, false, false, false };
+static const couple_power_inputs_t IDLE = { false, false, false };
 
 static couple_power_action_t eval(couple_power_state_t st, bool manual,
                                   couple_power_inputs_t in,
@@ -44,11 +44,7 @@ int main(void)
                COUPLE_POWER_SCREEN_OFF_MS, 0) == COUPLE_POWER_ACT_NONE);
 
     // ---- ACTIVE：会话占用只抑制深睡，不抑制息屏 ----
-    couple_power_inputs_t wifi = IDLE; wifi.wifi_busy = true;
     couple_power_inputs_t app = IDLE;  app.app_connected = true;
-    CHECK(eval(COUPLE_POWER_STATE_ACTIVE, false, wifi,
-               COUPLE_POWER_DEEP_AFTER_MS, 0) ==
-          COUPLE_POWER_ACT_SCREEN_OFF);
     CHECK(eval(COUPLE_POWER_STATE_ACTIVE, false, app,
                COUPLE_POWER_DEEP_AFTER_MS, 0) ==
           COUPLE_POWER_ACT_SCREEN_OFF);
@@ -65,13 +61,11 @@ int main(void)
     // ---- SCREEN_OFF：静默到点进警告屏；会话占用时不进 ----
     CHECK(eval(COUPLE_POWER_STATE_SCREEN_OFF, false, IDLE,
                COUPLE_POWER_DEEP_AFTER_MS, 0) == COUPLE_POWER_ACT_WARN);
-    CHECK(eval(COUPLE_POWER_STATE_SCREEN_OFF, false, wifi,
+    CHECK(eval(COUPLE_POWER_STATE_SCREEN_OFF, false, app,
                COUPLE_POWER_DEEP_AFTER_MS, 0) == COUPLE_POWER_ACT_NONE);
 
     // ---- SLEEP_WARN（自动）：环境恢复活跃即取消 ----
     CHECK(eval(COUPLE_POWER_STATE_SLEEP_WARN, false, partner, 0, 0) ==
-          COUPLE_POWER_ACT_SCREEN_ON);
-    CHECK(eval(COUPLE_POWER_STATE_SLEEP_WARN, false, wifi, 0, 0) ==
           COUPLE_POWER_ACT_SCREEN_ON);
     CHECK(eval(COUPLE_POWER_STATE_SLEEP_WARN, false, app, 0, 0) ==
           COUPLE_POWER_ACT_SCREEN_ON);
@@ -85,7 +79,7 @@ int main(void)
     // ---- SLEEP_WARN（手动）：不可被环境取消，时限更短 ----
     CHECK(eval(COUPLE_POWER_STATE_SLEEP_WARN, true, partner, 0, 0) ==
           COUPLE_POWER_ACT_NONE);
-    CHECK(eval(COUPLE_POWER_STATE_SLEEP_WARN, true, wifi, 0, 0) ==
+    CHECK(eval(COUPLE_POWER_STATE_SLEEP_WARN, true, app, 0, 0) ==
           COUPLE_POWER_ACT_NONE);
     CHECK(eval(COUPLE_POWER_STATE_SLEEP_WARN, true, IDLE, 0,
                COUPLE_POWER_WARN_MANUAL_MS - 1) == COUPLE_POWER_ACT_NONE);

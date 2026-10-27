@@ -45,10 +45,6 @@ run_static_checks() {
         -o "${test_dir}/test_couple_auto"
     "${test_dir}/test_couple_auto"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
-        tests/test_couple_wifi_parse.c main/couple_wifi_parse.c \
-        -o "${test_dir}/test_couple_wifi_parse"
-    "${test_dir}/test_couple_wifi_parse"
-    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
         tests/test_couple_time.c main/couple_time.c \
         -o "${test_dir}/test_couple_time"
     "${test_dir}/test_couple_time"
@@ -56,14 +52,6 @@ run_static_checks() {
         tests/test_couple_power.c main/couple_power.c \
         -o "${test_dir}/test_couple_power"
     "${test_dir}/test_couple_power"
-    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
-        tests/test_couple_wifi_scan.c main/couple_wifi_scan.c \
-        -o "${test_dir}/test_couple_wifi_scan"
-    "${test_dir}/test_couple_wifi_scan"
-    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
-        tests/test_couple_ai_json.c main/couple_ai_json.c \
-        -o "${test_dir}/test_couple_ai_json"
-    "${test_dir}/test_couple_ai_json"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Icomponents/bsp/src \
         tests/test_bsp_display_rounding.c components/bsp/src/bsp_display_rounding.c \
         -o "${test_dir}/test_bsp_display_rounding"
